@@ -1,7 +1,7 @@
 use crate::error::RingError;
 use std::env;
 
-pub fn get_url_from_args(arg: Vec<String>) -> Result<String, RingError> {
+pub fn get_args(arg: Vec<String>) -> Result<String, RingError> {
     // if arg.len() == 2 {
     //     Ok(&arg[1])
     // } else {
