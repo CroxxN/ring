@@ -35,9 +35,9 @@ impl EchoRequest {
     fn new() -> Self {
         Self::default()
     }
-    fn calc_checksum(&mut self) -> [u8; 14] {
+    fn calc_checksum(&mut self) {
         let mut sum = 0u32;
-        let mut bytes = self.final_bytes();
+        let bytes = self.final_bytes();
         for word in bytes.chunks(2) {
             let mut part = u16::from(word[0]) << 8;
             if word.len() > 1 {
@@ -51,10 +51,8 @@ impl EchoRequest {
         }
 
         let sum = !sum as u16;
-        bytes[2] = (sum >> 8) as u8;
-        bytes[3] = (sum & 0xff) as u8;
-        println!("The final bytes is {:?}", bytes);
-        bytes
+        self.checksum[0] = (sum >> 8) as u8;
+        self.checksum[1] = (sum & 0xff) as u8;
     }
     fn _increase_seq(&mut self) {
         self.seq_num = self.seq_num + 1;
@@ -63,6 +61,8 @@ impl EchoRequest {
         let mut final_bytes: [u8; 14] = [0; 14];
         final_bytes[0] = self.echo_type;
         final_bytes[1] = self.code;
+        final_bytes[2] = self.checksum[0];
+        final_bytes[3] = self.checksum[1];
         final_bytes[4] = self.identifier[0];
         final_bytes[5] = self.identifier[1];
         final_bytes[6] = (self.seq_num >> 8) as u8;
@@ -102,14 +102,13 @@ fn main() -> Result<(), RingError> {
     };
     let mut echo = EchoRequest::new();
     echo.calc_checksum();
-    match socket.send_to(&echo.final_bytes(), &sock_addr.into()) {
+    match socket.send(&echo.final_bytes()) {
         Ok(i) => println!("Successfully sent {} bytes", i),
         Err(_) => return Err(RingError::NetworkError),
     }
     let mut buf = [0u8; 64];
     match socket.read(&mut buf) {
         Ok(i) => {
-            println!("{buf:?}");
             println!("{} bytes successfully returned from the server", i)
         }
         Err(e) => {
