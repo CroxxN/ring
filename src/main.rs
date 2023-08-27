@@ -5,9 +5,6 @@ mod error;
 use cli_parse::get_args;
 use error::RingError;
 
-// Fixed Constant Data used to Ping the server
-// It's completely arbitrary
-
 #[derive(Debug, PartialEq, Eq)]
 struct EchoRequest {
     echo_type: u8,
@@ -26,6 +23,8 @@ impl Default for EchoRequest {
             checksum: [0; 2],
             identifier: [0; 2],
             seq_num: 0,
+            // Fixed Constant Data used to Ping the server
+            // It's completely arbitrary
             echo_data: b"MITTEN".to_owned(),
         }
     }
@@ -85,17 +84,14 @@ fn main() -> Result<(), RingError> {
     }
 
     let sock_addr = if let Some(dest) = url.to_socket_addrs()?.last() {
-        println!("Socket Address: {dest}");
         dest
     } else {
-        println!("\x1b[1;31mDestination Host Unparsable\x1b[0m");
+        println!("\x1b[1;31mFailed to parse url\x1b[0m");
         return Err(RingError::NetworkError);
     };
     let mut socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
     match socket.connect(&sock_addr.into()) {
-        Ok(()) => {
-            println!("Successfully Connected to Host")
-        }
+        Ok(()) => {}
         Err(e) => {
             println!("{e}");
         }
@@ -103,13 +99,18 @@ fn main() -> Result<(), RingError> {
     let mut echo = EchoRequest::new();
     echo.calc_checksum();
     match socket.send(&echo.final_bytes()) {
-        Ok(i) => println!("Successfully sent {} bytes", i),
+        Ok(i) => println!(
+            // Terminal Color Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
+
+            "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m",
+            url, sock_addr, i
+        ),
         Err(_) => return Err(RingError::NetworkError),
     }
     let mut buf = [0u8; 64];
     match socket.read(&mut buf) {
         Ok(i) => {
-            println!("{} bytes successfully returned from the server", i)
+            println!("{} bytes successfully returned from the server", (i - 20))
         }
         Err(e) => {
             println!("Encountered an Error: {e}")
