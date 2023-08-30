@@ -1,5 +1,5 @@
 use socket2::{Domain, Protocol, Socket, Type};
-use std::{env, io::Read, net::ToSocketAddrs};
+use std::{env, io::Read, net::ToSocketAddrs, sync::Arc, thread};
 mod cli_parse;
 mod error;
 use cli_parse::get_args;
@@ -89,7 +89,14 @@ fn main() -> Result<(), RingError> {
         println!("\x1b[1;31mFailed to parse url\x1b[0m");
         return Err(RingError::NetworkError);
     };
-    let mut socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
+
+    // YES! ARC! Electric!
+    let socket = Arc::new(Socket::new(
+        Domain::IPV4,
+        Type::RAW,
+        Some(Protocol::ICMPV4),
+    )?);
+
     match socket.connect(&sock_addr.into()) {
         Ok(()) => {}
         Err(e) => {
@@ -98,25 +105,37 @@ fn main() -> Result<(), RingError> {
     };
     let mut echo = EchoRequest::new();
     echo.calc_checksum();
-    match socket.send(&echo.final_bytes()) {
-        Ok(i) => println!(
-            // Terminal Color Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
-
-            "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m",
-            url, sock_addr, i
-        ),
-        Err(_) => return Err(RingError::NetworkError),
-    }
     let mut buf = [0u8; 64];
-    match socket.read(&mut buf) {
-        Ok(i) => {
-            println!("{} bytes successfully returned from the server", (i - 20))
+    let recv_socket = Arc::clone(&socket);
+    thread::spawn(move || loop {
+        match recv_socket.as_ref().read(&mut buf) {
+            Ok(i) => {
+                println!("{} bytes successfully returned from the server", (i - 20))
+            }
+            Err(e) => {
+                println!("Encountered an Error: {e}")
+            }
         }
-        Err(e) => {
-            println!("Encountered an Error: {e}")
+    });
+    let final_bytes = &echo.final_bytes();
+    // Currently Unrechable - Create a breaking condition
+    loop {
+        match socket.send(final_bytes) {
+            Ok(i) => {
+                println!(
+                // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
+
+                "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m",
+                url, sock_addr, i
+            );
+                // Temporary hack to get the compiler stop shouting. Ideally, will use `ctrc` to handle CTRL+C
+                break;
+            }
+            Err(_) => return Err(RingError::NetworkError),
         }
     }
     println!("\nSuccessfully Ringed! Now exiting!");
+    // Free Up the socket just in case
     socket.shutdown(std::net::Shutdown::Both)?;
     Ok(())
 }
