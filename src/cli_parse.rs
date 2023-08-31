@@ -1,5 +1,4 @@
 use crate::error::RingError;
-use std::env;
 
 pub fn get_args(arg: Vec<String>) -> Result<String, RingError> {
     // if arg.len() == 2 {

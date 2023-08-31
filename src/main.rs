@@ -1,5 +1,12 @@
+use ctrlc;
 use socket2::{Domain, Protocol, Socket, Type};
-use std::{env, io::Read, net::ToSocketAddrs, sync::Arc, thread};
+use std::{
+    env,
+    io::Read,
+    net::ToSocketAddrs,
+    sync::{atomic::AtomicBool, Arc},
+    thread,
+};
 mod cli_parse;
 mod error;
 use cli_parse::get_args;
@@ -107,19 +114,36 @@ fn main() -> Result<(), RingError> {
     echo.calc_checksum();
     let mut buf = [0u8; 64];
     let recv_socket = Arc::clone(&socket);
-    thread::spawn(move || loop {
-        match recv_socket.as_ref().read(&mut buf) {
-            Ok(i) => {
-                println!("{} bytes successfully returned from the server", (i - 20))
+    let cont = Arc::new(AtomicBool::new(true));
+    let cont_recv = Arc::clone(&cont);
+    thread::spawn(move || {
+        while cont_recv.load(std::sync::atomic::Ordering::SeqCst) {
+            match recv_socket.as_ref().read(&mut buf) {
+                Ok(i) => {
+                    println!(
+                        "\n{} bytes successfully returned from the server",
+                        i.wrapping_sub(20)
+                    )
+                }
+                Err(e) => {
+                    println!("Encountered an Error: {e}")
+                }
             }
-            Err(e) => {
-                println!("Encountered an Error: {e}")
-            }
+            thread::sleep(std::time::Duration::new(1, 0));
         }
     });
     let final_bytes = &echo.final_bytes();
     // Currently Unrechable - Create a breaking condition
-    loop {
+    let cont_send = Arc::clone(&cont);
+
+    // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
+    // determine when to stop running the loop
+
+    ctrlc::set_handler(move || cont_send.store(false, std::sync::atomic::Ordering::SeqCst))
+        .expect("Failed to register callback");
+
+    // Trial. Will see if the overhead of Arc exceeds that of channels, and if so, will replace with channels
+    while cont.load(std::sync::atomic::Ordering::SeqCst) {
         match socket.send(final_bytes) {
             Ok(i) => {
                 println!(
@@ -127,13 +151,14 @@ fn main() -> Result<(), RingError> {
 
                 "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m",
                 url, sock_addr, i
-            );
-                // Temporary hack to get the compiler stop shouting. Ideally, will use `ctrc` to handle CTRL+C
-                break;
+                );
             }
             Err(_) => return Err(RingError::NetworkError),
         }
+        thread::sleep(std::time::Duration::new(1, 0));
     }
+    // Add code here to give the diagnostics result of all the times Pinged.
+
     println!("\nSuccessfully Ringed! Now exiting!");
     // Free Up the socket just in case
     socket.shutdown(std::net::Shutdown::Both)?;
