@@ -4,7 +4,7 @@ use std::{
     env,
     io::Read,
     net::{SocketAddr, ToSocketAddrs},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, mpsc::channel, Arc},
     thread, time,
 };
 mod cli_parse;
@@ -14,7 +14,7 @@ use error::RingError;
 
 #[derive(Debug, PartialEq, Eq)]
 struct RingStats {
-    packet_sent: i32,
+    packet_sent: u32,
     successful: u32,
     loss: u32,
     // Better than using `Duration` as `Instant` exits specially for this purpose
@@ -55,6 +55,12 @@ impl Default for EchoRequest {
             echo_data: b"MITTEN".to_owned(),
         }
     }
+}
+
+#[derive(PartialEq, Eq)]
+enum RingMessage {
+    Continue,
+    Stop,
 }
 
 // Maybe in subsequent versions, the function below will be a generic one to get either IPV4 or IPV6
@@ -184,6 +190,9 @@ fn main() -> Result<(), RingError> {
         url, sock_addr, 14
 
     );
+
+    let (tx, rx) = channel::<RingMessage>();
+
     let mut echo = EchoRequest::new();
     echo.calc_checksum();
     let mut buf = [0u8; 64];
@@ -194,23 +203,42 @@ fn main() -> Result<(), RingError> {
     // the std MPSC channel is not suitable for the task below.
     //Also, use Condvar?
     let cont = Arc::new(AtomicBool::new(true));
-    let cont_recv = Arc::clone(&cont);
+    // let cont_recv = Arc::clone(&cont);
     let cont_send = Arc::clone(&cont);
 
     let handle = thread::spawn(move || {
-        let mut rtx = (0u32, 0u32);
-        while cont_recv.load(std::sync::atomic::Ordering::Relaxed) {
-            match recv_socket.read(&mut buf) {
-                Ok(i) => {
-                    // syncing of atomic bool lags a bit, so when Ctrl + C is pressed,
-                    // a zero-sized buffer is returned. We check the length, and print
-                    // only when it's greater than 20
-                    if i > 20 {
-                        println!("{} bytes successfully returned from the server", (i - 20));
-                        rtx.0 = rtx.0 + 1;
+        let mut rtx = (0u32, 0u32, 0u32);
+        loop {
+            match rx.recv() {
+                // Don't need to check because there are only two variants and one is already coverd
+                Ok(m) => {
+                    match recv_socket.read(&mut buf) {
+                        Ok(i) => {
+                            // If Ctrl + C is already pressed, but there is still data on the buffer,
+                            // we currently discard it. TODO: Check the buffer regardless for data
+                            // integrity, and if corrupted, add it to the loss packet var
+                            if m == RingMessage::Stop {
+                                rtx.2 = rtx.2 + 1;
+                                break;
+                            }
+                            // syncing of atomic bool lags a bit, so when Ctrl + C is pressed,
+                            // a zero-sized buffer is returned. We check the length, and print
+                            // only when it's greater than 20
+                            if i > 20 {
+                                println!(
+                                    "{} bytes successfully returned from the server",
+                                    (i - 20)
+                                );
+                                rtx.0 = rtx.0 + 1;
+                            }
+                        }
+                        Err(_) => {}
                     }
                 }
-                Err(_) => {}
+                Err(_) => {
+                    println!("Failed to receive message");
+                    break;
+                }
             }
         }
         return rtx;
@@ -226,8 +254,13 @@ fn main() -> Result<(), RingError> {
     // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
     // determine when to stop running the loop
 
-    ctrlc::set_handler(move || cont_send.store(false, std::sync::atomic::Ordering::Relaxed))
-        .expect("Failed to register callback");
+    let tx_clone = tx.clone();
+    ctrlc::set_handler(move || {
+        cont_send.store(false, std::sync::atomic::Ordering::Relaxed);
+        // TODO: Remove unwrap
+        tx_clone.clone().send(RingMessage::Stop).unwrap();
+    })
+    .expect("Failed to register callback");
 
     // Starts measuring and taking stats
     // We initialize the stat struct here to be as correct as possible while measuring the time taken.
@@ -235,29 +268,30 @@ fn main() -> Result<(), RingError> {
     let mut stats = RingStats::default();
 
     while cont.load(std::sync::atomic::Ordering::Relaxed) {
-        match socket.send(&packet) {
-            Ok(_) => {
-                stats.packet_sent = stats.packet_sent + 1;
-                thread::sleep(std::time::Duration::new(1, 0));
-            }
-            Err(_) => return Err(RingError::NetworkError),
-        }
+        socket.send(&packet)?;
+        if let Err(_) = tx.send(RingMessage::Continue) {
+            return Err(RingError::ByteParseError);
+        };
+        stats.packet_sent = stats.packet_sent + 1;
+        thread::sleep(std::time::Duration::new(1, 0));
     }
     // Add code here to give the diagnostics result of all the times Pinged.
-    let (sucsess, loss) = match handle.join() {
-        Ok((s, l)) => (s, l),
+    let (sucsess, loss, discard) = match handle.join() {
+        Ok((s, l, d)) => (s, l, d),
         Err(_) => {
             println!("It has panicked");
-            (0, 0)
+            (0, 0, 0)
         }
     };
+    stats.packet_sent = stats.packet_sent - discard;
     stats.successful = sucsess;
     stats.loss = loss;
     println!(
-        "\nSuccessfully Ringed! Received {} packets of {} total packets, with {}% loss! Now exiting!",
+        "\nSuccessfully Ringed! Received {} packets of {} total packets, with {}% loss! Now exiting! Pinged for a total of {} seconds",
         stats.successful,
         stats.packet_sent,
-        ((stats.loss * 100) / stats.packet_sent as u32)
+        ((stats.loss * 100) / stats.packet_sent as u32),
+        stats.time.elapsed().as_secs()
     );
 
     // Free Up the socket just in case
