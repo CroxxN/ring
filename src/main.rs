@@ -49,7 +49,7 @@ impl Default for EchoRequest {
             code: 0,
             checksum: [0; 2],
             identifier: [0; 2],
-            seq_num: 0,
+            seq_num: 1,
             // Fixed Constant Data used to Ping the server
             // It's completely arbitrary
             echo_data: b"MITTEN".to_owned(),
@@ -101,11 +101,11 @@ impl EchoRequest {
     fn new() -> Self {
         Self::default()
     }
+    // Change this function to accept a bool to indicate where it should return the checksum or not
+    // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
     #[inline]
-    fn calc_checksum(&mut self) {
+    fn calc_checksum(&mut self, bytes: &mut [u8; 14]) {
         let mut sum = 0u32;
-        let mut bytes = [0u8; 14];
-        self.final_bytes(&mut bytes);
         for word in bytes.chunks(2) {
             let mut part = u16::from(word[0]) << 8;
             if word.len() > 1 {
@@ -121,15 +121,28 @@ impl EchoRequest {
         let sum = !sum as u16;
         self.checksum[0] = (sum >> 8) as u8;
         self.checksum[1] = (sum & 0xff) as u8;
+        bytes[2] = self.checksum[0];
+        bytes[3] = self.checksum[1];
     }
-    fn _increase_seq(&mut self) {
+    fn increase_seq(&mut self) {
         self.seq_num = self.seq_num + 1;
     }
     fn final_bytes<'a>(&mut self, final_bytes: &mut [u8; 14]) {
+        if final_bytes[0] == self.echo_type {
+            self.increase_seq();
+            final_bytes[2] = 0;
+            final_bytes[3] = 0;
+            final_bytes[6] = (self.seq_num >> 8) as u8;
+            final_bytes[7] = (self.seq_num & 0x00FF) as u8;
+            self.calc_checksum(final_bytes);
+            return;
+        }
         final_bytes[0] = self.echo_type;
         final_bytes[1] = self.code;
-        final_bytes[2] = self.checksum[0];
-        final_bytes[3] = self.checksum[1];
+        // It's already zero, but still make sure
+        final_bytes[2] = 0;
+        final_bytes[3] = 0;
+
         final_bytes[4] = self.identifier[0];
         final_bytes[5] = self.identifier[1];
         final_bytes[6] = (self.seq_num >> 8) as u8;
@@ -140,6 +153,7 @@ impl EchoRequest {
         final_bytes[11] = self.echo_data[3];
         final_bytes[12] = self.echo_data[4];
         final_bytes[13] = self.echo_data[5];
+        self.calc_checksum(final_bytes);
     }
     // Will change `_ping_status()` to `ping_status()` currently uses
     // underscore to get the compiler stop shouting
@@ -194,7 +208,6 @@ fn main() -> Result<(), RingError> {
     let (tx, rx) = channel::<RingMessage>();
 
     let mut echo = EchoRequest::new();
-    echo.calc_checksum();
     let mut buf = [0u8; 64];
 
     let mut recv_socket = socket.try_clone()?;
@@ -273,15 +286,14 @@ fn main() -> Result<(), RingError> {
             return Err(RingError::ByteParseError);
         };
         stats.packet_sent = stats.packet_sent + 1;
+        echo.final_bytes(&mut packet);
+        // println!("{:?}", packet);
         thread::sleep(std::time::Duration::new(1, 0));
     }
     // Add code here to give the diagnostics result of all the times Pinged.
     let (sucsess, loss, discard) = match handle.join() {
         Ok((s, l, d)) => (s, l, d),
-        Err(_) => {
-            println!("It has panicked");
-            (0, 0, 0)
-        }
+        Err(_) => (0, 0, 0),
     };
     stats.packet_sent = stats.packet_sent - discard;
     stats.successful = sucsess;
