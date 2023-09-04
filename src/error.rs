@@ -9,7 +9,7 @@ pub enum RingError {
     IoError(io::Error),
     DestParseError(net::AddrParseError),
     NetworkError,
-    ByteParseError,
+    ChannelSendError,
 }
 
 // impl From
@@ -41,8 +41,8 @@ impl Display for RingError {
             RingError::NetworkError => {
                 write!(f, "\x1b[1;31mNetwork Error Occured\x1b[0md")
             }
-            RingError::ByteParseError => {
-                write!(f, "\x1b[1;31mError Occured While Parsing bytes\x1b[0md")
+            RingError::ChannelSendError => {
+                write!(f, "\x1b[1;31mFailed to transport data\x1b[0md")
             }
         }
     }

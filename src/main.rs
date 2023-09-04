@@ -36,7 +36,6 @@ impl Default for RingStats {
 struct EchoRequest {
     echo_type: u8,
     code: u8,
-    checksum: [u8; 2],
     identifier: [u8; 2],
     seq_num: u16,
     echo_data: [u8; 6],
@@ -47,7 +46,6 @@ impl Default for EchoRequest {
         Self {
             echo_type: 8,
             code: 0,
-            checksum: [0; 2],
             identifier: [0; 2],
             seq_num: 1,
             // Fixed Constant Data used to Ping the server
@@ -59,7 +57,7 @@ impl Default for EchoRequest {
 
 #[derive(PartialEq, Eq)]
 enum RingMessage {
-    Continue,
+    Continue((u16, time::Instant)),
     Stop,
 }
 
@@ -80,21 +78,63 @@ enum RingMessage {
 // TODO: Make this function generic over both IP versions
 
 fn ip4_socket(url: &str) -> Result<SocketAddr, RingError> {
-    let mut parsed_socket_vec = url.to_socket_addrs()?;
-    let sock_addr = match parsed_socket_vec.next() {
-        Some(addr) if addr.is_ipv4() => addr,
-        Some(_) => {
-            if let Some(addr) = parsed_socket_vec.last() {
-                addr
-            } else {
-                return Err(RingError::NetworkError);
-            }
+    let parsed_socket_vec = url.to_socket_addrs()?;
+    let addr = parsed_socket_vec.into_iter().try_for_each(|a| {
+        if a.is_ipv4() {
+            return std::ops::ControlFlow::Break(a);
         }
-        None => {
-            return Err(RingError::NetworkError);
+        std::ops::ControlFlow::Continue(())
+    });
+    // Use std::ops::ControlFlow::Break().break_value() when it stabalizes
+    if let std::ops::ControlFlow::Break(s) = addr {
+        return Ok(s);
+    } else {
+        return Err(RingError::NetworkError);
+    }
+}
+
+// Global Checksum Calculator
+// Making this function global such that it's not tied to a `EchoRequest` struct
+// Calculating checksums is required when data is returned, so instead of typing it
+// down as a method, it's global
+fn calc_checksum_g(bytes: &mut [u8], container: Option<&mut u16>) {
+    bytes[2] = 0;
+    bytes[3] = 0;
+    let mut sum = 0u32;
+    for word in bytes.chunks(2) {
+        let mut part = u16::from(word[0]) << 8;
+        if word.len() > 1 {
+            part += u16::from(word[1]);
         }
-    };
-    return Ok(sock_addr);
+        sum = sum.wrapping_add(u32::from(part));
+    }
+
+    while (sum >> 16) > 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+
+    let sum = !sum as u16;
+    // If a container is provided, return the checksum through the container
+    if let Some(c) = container {
+        *c = sum;
+    }
+    // If not, just append it to the original data buffer
+    else {
+        bytes[2] = (sum >> 8) as u8;
+        bytes[3] = (sum & 0xff) as u8;
+    }
+}
+
+// Accepts a data buffer with already calculated and checksum-ed fields
+// Checks if the checksum provided in the value matches with the one we
+// calculate. If they don't match, some data has been corrupted
+// Making global for the same resean as the above function + it can't be
+// tied down to any struct
+fn check_checksum_g(bytes: &mut [u8]) -> bool {
+    let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
+    let mut final_checksum = 0;
+    calc_checksum_g(bytes, Some(&mut final_checksum));
+    init_checksum == final_checksum
 }
 
 impl EchoRequest {
@@ -105,24 +145,7 @@ impl EchoRequest {
     // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
     #[inline]
     fn calc_checksum(&mut self, bytes: &mut [u8; 14]) {
-        let mut sum = 0u32;
-        for word in bytes.chunks(2) {
-            let mut part = u16::from(word[0]) << 8;
-            if word.len() > 1 {
-                part += u16::from(word[1]);
-            }
-            sum = sum.wrapping_add(u32::from(part));
-        }
-
-        while (sum >> 16) > 0 {
-            sum = (sum & 0xffff) + (sum >> 16);
-        }
-
-        let sum = !sum as u16;
-        self.checksum[0] = (sum >> 8) as u8;
-        self.checksum[1] = (sum & 0xff) as u8;
-        bytes[2] = self.checksum[0];
-        bytes[3] = self.checksum[1];
+        calc_checksum_g(bytes, None);
     }
     fn increase_seq(&mut self) {
         self.seq_num = self.seq_num + 1;
@@ -130,8 +153,6 @@ impl EchoRequest {
     fn final_bytes<'a>(&mut self, final_bytes: &mut [u8; 14]) {
         if final_bytes[0] == self.echo_type {
             self.increase_seq();
-            final_bytes[2] = 0;
-            final_bytes[3] = 0;
             final_bytes[6] = (self.seq_num >> 8) as u8;
             final_bytes[7] = (self.seq_num & 0x00FF) as u8;
             self.calc_checksum(final_bytes);
@@ -155,18 +176,6 @@ impl EchoRequest {
         final_bytes[13] = self.echo_data[5];
         self.calc_checksum(final_bytes);
     }
-    // Will change `_ping_status()` to `ping_status()` currently uses
-    // underscore to get the compiler stop shouting
-    fn _ping_status() {
-        //
-        unimplemented!()
-    }
-
-    //To get the compiler to stop shouting about `ByteParseError` not being used
-    fn _parse_error() -> RingError {
-        //TODO: Actaully implement this
-        RingError::ByteParseError
-    }
 }
 
 fn main() -> Result<(), RingError> {
@@ -181,15 +190,12 @@ fn main() -> Result<(), RingError> {
     //     &url
     // };
     let sock_addr = ip4_socket(&url)?;
-    // YES! ARC! Electric!
-    let socket = Arc::new(Socket::new(
-        Domain::IPV4,
-        Type::RAW,
-        Some(Protocol::ICMPV4),
-    )?);
-    // socket.set_read_timeout(Some(time::Duration::new(1, 0)))?;
-    // Just set it to non-blocking
-    socket.set_nonblocking(true)?;
+    let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
+    socket.set_read_timeout(Some(time::Duration::from_millis(500)))?; // Also the timeout for ICMP packets
+
+    // Just set it to non-blocking? NO. We need some sort of time out for figuring out detination unreachable
+    // packets. read_timeouts are extremely easy and less messy way to do that.
+    // socket.set_nonblocking(true)?;
 
     match socket.connect(&sock_addr.into()) {
         Ok(()) => {}
@@ -226,26 +232,43 @@ fn main() -> Result<(), RingError> {
                 // Don't need to check because there are only two variants and one is already coverd
                 Ok(m) => {
                     match recv_socket.read(&mut buf) {
+                        // TODO: Check the code type for detailed error tracking
                         Ok(i) => {
                             // If Ctrl + C is already pressed, but there is still data on the buffer,
-                            // we currently discard it. TODO: Check the buffer regardless for data
-                            // integrity, and if corrupted, add it to the loss packet var
+                            // we currently discard it.
+                            let mut time = 0;
+                            if let RingMessage::Continue(t) = m {
+                                time = t.1.elapsed().as_millis();
+                            }
                             if m == RingMessage::Stop {
                                 rtx.2 = rtx.2 + 1;
                                 break;
                             }
-                            // syncing of atomic bool lags a bit, so when Ctrl + C is pressed,
-                            // a zero-sized buffer is returned. We check the length, and print
-                            // only when it's greater than 20
-                            if i > 20 {
-                                println!(
-                                    "{} bytes successfully returned from the server",
-                                    (i - 20)
-                                );
+
+                            let len = ((buf[0] & 0x0F) << 2) as usize;
+                            let ttl = buf[8];
+                            let seq = (buf[len + 6] as u16) << 8 | (buf[len + 7] as u16);
+                            if !check_checksum_g(&mut buf[len..i]) {
+                                rtx.1 = rtx.1 + 1;
+                                dbg!(rtx.1);
+                            } else {
                                 rtx.0 = rtx.0 + 1;
                             }
+                            println!(
+                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", (i - len), seq, ttl, time
+                            );
                         }
-                        Err(_) => {}
+                        Err(_e) => {
+                            // Just pass for now. TODO: Fix it. find a way to distinguish between stray packets
+                            // and actually lost packets
+                            let _seq_num;
+                            if let RingMessage::Continue(i) = m {
+                                _seq_num = i.0;
+                                println!("\x1b[1;31mDestination Host Unreachable. ICMP Sequence Packet: {}\x1b[0m", _seq_num);
+                            } else {
+                                break;
+                            }
+                        }
                     }
                 }
                 Err(_) => {
@@ -270,7 +293,8 @@ fn main() -> Result<(), RingError> {
     let tx_clone = tx.clone();
     ctrlc::set_handler(move || {
         cont_send.store(false, std::sync::atomic::Ordering::Relaxed);
-        // TODO: Remove unwrap
+        // Unwrap seems good here. There is not much we can do if sending
+        // stop messege fails. The best thing to do would be to exit the program.
         tx_clone.clone().send(RingMessage::Stop).unwrap();
     })
     .expect("Failed to register callback");
@@ -281,9 +305,10 @@ fn main() -> Result<(), RingError> {
     let mut stats = RingStats::default();
 
     while cont.load(std::sync::atomic::Ordering::Relaxed) {
+        let time = time::Instant::now();
         socket.send(&packet)?;
-        if let Err(_) = tx.send(RingMessage::Continue) {
-            return Err(RingError::ByteParseError);
+        if let Err(_) = tx.send(RingMessage::Continue((echo.seq_num, time))) {
+            return Err(RingError::ChannelSendError);
         };
         stats.packet_sent = stats.packet_sent + 1;
         echo.final_bytes(&mut packet);
@@ -296,8 +321,8 @@ fn main() -> Result<(), RingError> {
         Err(_) => (0, 0, 0),
     };
     stats.packet_sent = stats.packet_sent - discard;
+    stats.loss = loss + (stats.packet_sent - sucsess);
     stats.successful = sucsess;
-    stats.loss = loss;
     println!(
         "\nSuccessfully Ringed! Received {} packets of {} total packets, with {}% loss! Now exiting! Pinged for a total of {} seconds",
         stats.successful,
