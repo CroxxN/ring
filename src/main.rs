@@ -265,7 +265,6 @@ fn main() -> Result<(), RingError> {
                         }
                     }
                     match t {
-                        // TODO: Check the code type for detailed error tracking
                         Ok(i) => {
                             // If Ctrl + C is already pressed, but there is still data on the buffer,
                             // we currently discard it.
