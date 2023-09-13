@@ -1,4 +1,6 @@
+#![allow(unused_imports)]
 use crate::error::RingError;
+use getopts;
 
 // TODO: Add more cli options like choosing between IP modes
 // and number of pings

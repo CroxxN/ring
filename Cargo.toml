@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 socket2 = {version="0.5.3", features=["all"]}
 ctrlc = "3.4.0"
+getopts = "0.2.13"
