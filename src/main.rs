@@ -4,7 +4,7 @@ use std::{
     env,
     io::Read,
     net::{SocketAddr, ToSocketAddrs},
-    sync::{atomic::AtomicBool, mpsc::channel, Arc},
+    sync::{atomic::AtomicBool, mpsc::channel, Arc, Condvar, Mutex},
     thread, time,
 };
 mod cli_parse;
@@ -225,15 +225,26 @@ fn main() -> Result<(), RingError> {
     // let cont_recv = Arc::clone(&cont);
     let cont_send = Arc::clone(&cont);
 
+    let pcond = Arc::new((Mutex::new(false), Condvar::new()));
+    let scond = pcond.clone();
+    let tcond = pcond.clone();
+
     let handle = thread::spawn(move || {
         let mut rtx = (0u32, 0u32, 0u32);
-        'outer: loop {
+        let (lock, _) = &*tcond;
+        loop {
             match rx.recv() {
                 // Don't need to check because there are only two variants and one is already coverd
                 Ok(m) => {
-                    if m == RingMessage::Stop {
+                    let instant;
+                    if let RingMessage::Continue((_, i)) = m {
+                        instant = i;
+                        while i.elapsed().as_millis() < 1000 && recv_socket.peek_sender().is_err() {
+                            continue;
+                        }
+                    } else {
                         // If there is a packet and that packet is ICMP echo reply, discard it
-                        if recv_socket.read(&mut buf).is_ok() && buf[20] == 0 {
+                        if recv_socket.peek_sender().is_ok() {
                             rtx.2 = rtx.2 + 1;
                         }
                         break;
@@ -241,41 +252,11 @@ fn main() -> Result<(), RingError> {
                     // Weird hack to return as soon as CTRL + C is hit.
                     // We could do it with timeout, but if we do, pressing CTRL + C
                     // doesn't immediety return
-                    let mut t;
-                    'inner: loop {
-                        t = recv_socket.read(&mut buf);
-                        if t.is_ok() {
-                            break 'inner;
-                        } else {
-                            if let RingMessage::Continue(c) = m {
-                                while c.1.elapsed() < time::Duration::from_millis(1000) {
-                                    if rx.try_recv().ok() == Some(RingMessage::Stop) {
-                                        break 'outer;
-                                    }
-                                    t = recv_socket.read(&mut buf);
-                                    if t.is_ok() {
-                                        break 'inner;
-                                    }
-                                }
-                                break 'inner;
-                            }
-                        }
-                        if rx.recv().ok() == Some(RingMessage::Stop) {
-                            break 'outer;
-                        }
-                    }
-                    match t {
+                    match recv_socket.read(&mut buf) {
                         Ok(i) => {
+                            let time = instant.elapsed().as_millis();
                             // If Ctrl + C is already pressed, but there is still data on the buffer,
                             // we currently discard it.
-                            let mut time = 0;
-                            if let RingMessage::Continue(t) = m {
-                                time = t.1.elapsed().as_millis();
-                            }
-                            if m == RingMessage::Stop {
-                                rtx.2 = rtx.2 + 1;
-                                break;
-                            }
                             let len = ((buf[0] & 0x0F) << 2) as usize;
                             // If the packet isn't ICMP echo reply, discard it.
                             if buf[len] != 0 {
@@ -296,19 +277,27 @@ fn main() -> Result<(), RingError> {
                         }
                         Err(_e) => {
                             let _seq_num;
-                            if let RingMessage::Continue(i) = m {
-                                _seq_num = i.0;
+                            if let RingMessage::Continue((i, _)) = m {
+                                _seq_num = i;
                                 // We actually report timed-out packets instead of just ignoring it.
                                 // Also destination host unrechable is just timed-out packets.
                                 println!(
                                     "\x1b[1;31mPacket Timed Out. ICMP Sequence Packet: {}\x1b[0m",
                                     _seq_num
                                 );
-                            } else {
-                                break;
                             }
                         }
                     }
+                    let lock = lock.lock().unwrap();
+                    if *lock {
+                        if recv_socket.peek_sender().is_ok() {
+                            rtx.2 = rtx.2 + 1;
+                        }
+                        break;
+                    }
+                    // if rx.try_recv().unwrap() == RingMessage::Stop {
+                    //     break;
+                    // }
                 }
                 Err(_) => {
                     println!("Failed to receive message");
@@ -334,7 +323,11 @@ fn main() -> Result<(), RingError> {
         cont_send.store(false, std::sync::atomic::Ordering::Relaxed);
         // Unwrap seems good here. There is not much we can do if sending
         // stop messege fails. The best thing to do would be to exit the program.
-        tx_clone.clone().send(RingMessage::Stop).unwrap();
+        let (lock, cond) = &*scond;
+        let mut lock = lock.lock().unwrap();
+        *lock = true;
+        cond.notify_all();
+        tx_clone.send(RingMessage::Stop).unwrap();
     })
     .expect("Failed to register callback");
 
@@ -343,7 +336,9 @@ fn main() -> Result<(), RingError> {
     // If we start early, the internal calculations may dilute the the time
     let mut stats = RingStats::default();
 
-    'outer: while cont.load(std::sync::atomic::Ordering::Relaxed) {
+    let (lock, cond) = &*pcond;
+
+    loop {
         let time = time::Instant::now();
         socket.send(&packet)?;
         if let Err(_) = tx.send(RingMessage::Continue((echo.seq_num, time))) {
@@ -351,16 +346,13 @@ fn main() -> Result<(), RingError> {
         };
         stats.packet_sent = stats.packet_sent + 1;
         echo.final_bytes(&mut packet);
-        // println!("{:?}", packet);
-        let t = time::Instant::now();
-        //
-        'inner: loop {
-            if !cont.load(std::sync::atomic::Ordering::Relaxed) {
-                break 'outer;
-            }
-            if t.elapsed().as_millis() >= 1000 {
-                break 'inner;
-            }
+        let mut lock = lock.lock().unwrap();
+        let res = cond
+            .wait_timeout(lock, time::Duration::from_secs(1))
+            .unwrap();
+        lock = res.0;
+        if *lock {
+            break;
         }
     }
     // Add code here to give the diagnostics result of all the times Pinged.
