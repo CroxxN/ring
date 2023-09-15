@@ -225,21 +225,25 @@ fn main() -> Result<(), RingError> {
     // let cont_recv = Arc::clone(&cont);
     let cont_send = Arc::clone(&cont);
 
+    // Condvar! YAY!
     let pcond = Arc::new((Mutex::new(false), Condvar::new()));
     let scond = pcond.clone();
-    let tcond = pcond.clone();
 
     let handle = thread::spawn(move || {
         let mut rtx = (0u32, 0u32, 0u32);
-        let (lock, _) = &*tcond;
-        loop {
+        'outer: loop {
             match rx.recv() {
                 // Don't need to check because there are only two variants and one is already coverd
                 Ok(m) => {
                     let instant;
                     if let RingMessage::Continue((_, i)) = m {
                         instant = i;
+                        // Can't help spining
                         while i.elapsed().as_millis() < 1000 && recv_socket.peek_sender().is_err() {
+                            // If the user presses CTRL + C while we're waiting for a reply, exit every thing
+                            if rx.try_recv().is_ok_and(|v| v == RingMessage::Stop) {
+                                break 'outer;
+                            }
                             continue;
                         }
                     } else {
@@ -288,16 +292,6 @@ fn main() -> Result<(), RingError> {
                             }
                         }
                     }
-                    let lock = lock.lock().unwrap();
-                    if *lock {
-                        if recv_socket.peek_sender().is_ok() {
-                            rtx.2 = rtx.2 + 1;
-                        }
-                        break;
-                    }
-                    // if rx.try_recv().unwrap() == RingMessage::Stop {
-                    //     break;
-                    // }
                 }
                 Err(_) => {
                     println!("Failed to receive message");

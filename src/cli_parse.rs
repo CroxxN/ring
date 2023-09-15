@@ -39,17 +39,38 @@ fn build_options() -> Options {
     opts.optflagopt("c", "count", "Stop ringing after <count> times", "<COUNT>");
     opts.optflagopt("D", "timestamp", "Print timestamp", "<TIMESTAMP>");
 
-    // A required, argument option
-    opts.reqopt("", "", "Destination Ring Address", "<dest_addr>");
+    // The destination is the only positional argument, so we don't designate a option flag
     opts
 }
 
 // Doesn't return anything because it handles all errors by displaying the help message.
-fn cli_actions(m: Matches) {}
+fn cli_actions(pname: &str, matches: Matches) -> Option<String> {
+    if matches.opt_present("h") {
+        print_help(pname);
+        return None;
+    };
+    // Get the (only) positional argument
+    let addr = if !matches.free.is_empty() {
+        matches.free[0].to_owned()
+    } else {
+        // TODO: Print specific message with colors like "RED: Missing\RED: Destination Address"
+        print_help(pname);
+        return None;
+    };
+    Some(addr)
+    // if let Some(addr) = matches.free {
+    //     return Some(addr);
+    //     // TODO: call the ping util. IMP: should come last
+    // } else {
+    //     print_help(pname);
+    //     return None;
+    // }
+}
 
-pub fn parse_args() -> Result<String, RingError> {
-    let args: Vec<String> = env::args().collect();
-    let program_name = &args[0];
+// TODO: Change the function signature to not accept anything
+// TODO: Convert to main function & don't return anything
+pub fn get_args(args: Vec<String>) -> Result<String, RingError> {
+    // let args: Vec<String> = env::args().collect();
     let opts = build_options();
     let matches = if let Ok(m) = opts.parse(&args[1..]) {
         m
@@ -58,15 +79,9 @@ pub fn parse_args() -> Result<String, RingError> {
         return Err(RingError::ArgError);
     };
 
-    cli_actions(matches);
-    Ok("DONE".to_owned())
-}
-
-// TODO: Remove this function once the real functionality is implemented
-pub fn get_args(arg: Vec<String>) -> Result<String, RingError> {
-    let arglen = arg.len();
-    match arglen {
-        2 => Ok(arg[1].to_owned()),
-        _ => Err(RingError::ArgError),
+    if let Some(addr) = cli_actions(&args[0], matches) {
+        Ok(addr)
+    } else {
+        Err(RingError::ArgError)
     }
 }
