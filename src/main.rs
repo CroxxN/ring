@@ -144,13 +144,13 @@ impl EchoRequest {
     // Change this function to accept a bool to indicate where it should return the checksum or not
     // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
     #[inline]
-    fn calc_checksum(&mut self, bytes: &mut [u8; 14]) {
+    fn calc_checksum(&mut self, bytes: &mut [u8]) {
         calc_checksum_g(bytes, None);
     }
     fn increase_seq(&mut self) {
         self.seq_num = self.seq_num + 1;
     }
-    fn final_bytes<'a>(&mut self, final_bytes: &mut [u8; 14]) {
+    fn final_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
         if final_bytes[0] == self.echo_type {
             self.increase_seq();
             final_bytes[6] = (self.seq_num >> 8) as u8;
@@ -168,12 +168,7 @@ impl EchoRequest {
         final_bytes[5] = self.identifier[1];
         final_bytes[6] = (self.seq_num >> 8) as u8;
         final_bytes[7] = (self.seq_num & 0x00FF) as u8;
-        final_bytes[8] = self.echo_data[0];
-        final_bytes[9] = self.echo_data[1];
-        final_bytes[10] = self.echo_data[2];
-        final_bytes[11] = self.echo_data[3];
-        final_bytes[12] = self.echo_data[4];
-        final_bytes[13] = self.echo_data[5];
+        final_bytes[8..].copy_from_slice(&self.echo_data[0..]);
         self.calc_checksum(final_bytes);
     }
 }
@@ -193,8 +188,6 @@ fn main() -> Result<(), RingError> {
     let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
     // socket.set_read_timeout(Some(time::Duration::from_millis(500)))?; // Also the timeout for ICMP packets
 
-    // Just set it to non-blocking? NO. We need some sort of time out for figuring out detination unreachable
-    // packets. read_timeouts are extremely easy and less messy way to do that.
     socket.set_nonblocking(true)?;
 
     match socket.connect(&sock_addr.into()) {
@@ -294,7 +287,6 @@ fn main() -> Result<(), RingError> {
                     }
                 }
                 Err(_) => {
-                    println!("Failed to receive message");
                     break;
                 }
             }
@@ -346,6 +338,7 @@ fn main() -> Result<(), RingError> {
             .unwrap();
         lock = res.0;
         if *lock {
+            drop(tx);
             break;
         }
     }
