@@ -1,366 +1,184 @@
-use ctrlc;
-use socket2::{Domain, Protocol, Socket, Type};
-use std::{
-    env,
-    io::Read,
-    net::{SocketAddr, ToSocketAddrs},
-    sync::{atomic::AtomicBool, mpsc::channel, Arc, Condvar, Mutex},
-    thread, time,
-};
-mod cli_parse;
+// TODO: Remove these ignored warnings
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 mod error;
-use cli_parse::get_args;
+mod ring_impl;
 use error::RingError;
+use getopts::{Matches, Options};
+use socket2::{Domain, Protocol, Socket, Type};
+use std::{env, net::SocketAddr};
 
-#[derive(Debug, PartialEq, Eq)]
-struct RingStats {
-    packet_sent: u32,
-    successful: u32,
-    loss: u32,
-    // Better than using `Duration` as `Instant` exits specially for this purpose
-    time: time::Instant,
+const VERSION: &'static str = "0.1";
+
+struct RingOptions {
+    socket: Socket,
+    count: u32,
+    ip: IP,
+    ttl: u32,
+    quite: bool,
 }
 
-impl Default for RingStats {
-    fn default() -> Self {
-        Self {
-            packet_sent: 0,
-            successful: 0,
-            loss: 0,
-            time: time::Instant::now(),
+#[derive(PartialEq)]
+enum IP {
+    V4,
+    V6,
+}
+
+impl From<&str> for IP {
+    fn from(value: &str) -> Self {
+        if value == "4" {
+            Self::V4
+        } else {
+            Self::V6
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct EchoRequest {
-    echo_type: u8,
-    code: u8,
-    identifier: [u8; 2],
-    seq_num: u16,
-    echo_data: [u8; 6],
-}
-
-impl Default for EchoRequest {
-    fn default() -> Self {
-        Self {
-            echo_type: 8,
-            code: 0,
-            identifier: [0; 2],
-            seq_num: 1,
-            // Fixed Constant Data used to Ping the server
-            // It's completely arbitrary
-            echo_data: b"MITTEN".to_owned(),
+impl RingOptions {
+    fn new() -> Result<Self, RingError> {
+        Ok(Self {
+            socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            count: 0,
+            ip: IP::V6,
+            ttl: 64,
+            quite: false,
+        })
+    }
+    fn set_count(&mut self, count: u32) {
+        self.count = count;
+    }
+    fn set_ip(&mut self, ip: &str) {
+        self.ip = IP::from(ip);
+    }
+    fn set_ttl(&mut self, ttl: u32) -> Result<(), RingError> {
+        self.socket.set_ttl(ttl)?;
+        self.ttl = ttl;
+        Ok(())
+    }
+    fn set_quite(&mut self, quite: bool) {
+        self.quite = quite;
+    }
+    fn set_ipv(&mut self, ip: Option<IP>) -> Result<(), RingError> {
+        if ip == Some(IP::V4) {
+            self.socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
         }
+        Ok(())
     }
 }
+// TODO: Add more cli options like choosing between IP modes
+// and number of pings
 
-#[derive(PartialEq, Eq)]
-enum RingMessage {
-    Continue((u16, time::Instant)),
-    Stop,
+// TODO: Build the help message, with colors too
+const HELP_LONG: &'static str = "TODO";
+
+// Utility to print the help screen
+fn print_help(pname: &str) {
+    println!("{}: Usage\n", pname);
+    println!("{}", HELP_LONG);
 }
 
-// Maybe in subsequent versions, the function below will be a generic one to get either IPV4 or IPV6
-// Could make it by adding a type parameter `<IPVersion>` in the function description, and make it generic over
-// IP versions
+fn print_help_brief(pname: &str) {
+    println!("Usage: {} <destination_address>", pname);
+}
 
-// The function could look like:
+fn print_version(pname: &str) {
+    println!("\n\x1b[1;33m{}: Version {}\x1b[0m", pname, VERSION);
+}
+// Build the options of the ring utility
+// TODO: Support more options?
+fn build_options() -> Options {
+    let mut opts = Options::new();
 
-// fn get_ip_socket<IPVersion>(url: &str) -> Result<SocketAddr, RingError>{}
-// where `IPVersion` is
-// enum IPVersion {
-//     IPV4,
-//     IPV6
-// }
-// Better yet, the whole function could be separated over the another module entirely
-// So, this function is curretly unstable, and may break over time
-// TODO: Make this function generic over both IP versions
+    // A optional, no-argument option
+    opts.optflag("4", "ipv4", "Ring a IPV4 address");
+    opts.optflag("6", "ipv6", "Ring a IPV6 address");
+    opts.optflag(
+        "q",
+        "quite",
+        "Ring quitely without printing intermediate ping results",
+    );
+    opts.optflag("h", "help", "Print this help message");
+    opts.optflag("V", "version", "Print current Ring version");
 
-fn ip4_socket(url: &str) -> Result<SocketAddr, RingError> {
-    let parsed_socket_vec = url.to_socket_addrs()?;
-    let addr = parsed_socket_vec.into_iter().try_for_each(|a| {
-        if a.is_ipv4() {
-            return std::ops::ControlFlow::Break(a);
-        }
-        std::ops::ControlFlow::Continue(())
-    });
-    // Use std::ops::ControlFlow::Break().break_value() when it stabalizes
-    if let std::ops::ControlFlow::Break(s) = addr {
-        return Ok(s);
+    // A optional, argument option
+    opts.optflagopt("c", "count", "Stop ringing after <count> times", "<COUNT>");
+    opts.optflagopt("t", "ttl", "Set time-to-live value", "<ttl>");
+
+    // The destination is the only positional argument, so we don't designate a option flag
+    opts
+}
+
+// Doesn't return anything because it handles all errors by displaying the help message.
+fn cli_actions(pname: &str, matches: Matches) -> Option<String> {
+    // TODO: remove the unwrap
+    let mut cli_options = RingOptions::new().unwrap();
+    if matches.opt_present("h") {
+        print_help(pname);
+        return None;
+    };
+    if matches.opt_present("V") {
+        print_version(pname);
+        return None;
+    }
+    // TODO: Maybe check and use `unwrap_or_default()`
+    if let Some(c) = matches.opt_str("c") {
+        cli_options.set_count(c.parse().unwrap_or(0));
+    };
+    if let Some(t) = matches.opt_str("ttl") {
+        _ = cli_options.set_ttl(t.parse().unwrap_or(64));
+    }
+    if matches.opt_present("q") {
+        cli_options.set_quite(true);
+    }
+
+    // Get the (only) positional argument
+    let addr = if !matches.free.is_empty() {
+        matches.free[0].to_owned()
     } else {
-        return Err(RingError::NetworkError);
-    }
-}
+        // "RED: Missing\RED: Destination Address"
+        eprintln!("\n\x1b[1;31mError: Missing destination address\x1b[0m\n");
+        print_help_brief(pname);
 
-// Global Checksum Calculator
-// Making this function global such that it's not tied to a `EchoRequest` struct
-// Calculating checksums is required when data is returned, so instead of typing it
-// down as a method, it's global
-fn calc_checksum_g(bytes: &mut [u8], container: Option<&mut u16>) {
-    bytes[2] = 0;
-    bytes[3] = 0;
-    let mut sum = 0u32;
-    for word in bytes.chunks(2) {
-        let mut part = u16::from(word[0]) << 8;
-        if word.len() > 1 {
-            part += u16::from(word[1]);
-        }
-        sum = sum.wrapping_add(u32::from(part));
-    }
-
-    while (sum >> 16) > 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-
-    let sum = !sum as u16;
-    // If a container is provided, return the checksum through the container
-    if let Some(c) = container {
-        *c = sum;
-    }
-    // If not, just append it to the original data buffer
-    else {
-        bytes[2] = (sum >> 8) as u8;
-        bytes[3] = (sum & 0xff) as u8;
-    }
-}
-
-// Accepts a data buffer with already calculated and checksum-ed fields
-// Checks if the checksum provided in the value matches with the one we
-// calculate. If they don't match, some data has been corrupted
-// Making global for the same resean as the above function + it can't be
-// tied down to any struct
-fn check_checksum_g(bytes: &mut [u8]) -> bool {
-    let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
-    let mut final_checksum = 0;
-    calc_checksum_g(bytes, Some(&mut final_checksum));
-    init_checksum == final_checksum
-}
-
-impl EchoRequest {
-    fn new() -> Self {
-        Self::default()
-    }
-    // Change this function to accept a bool to indicate where it should return the checksum or not
-    // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
-    #[inline]
-    fn calc_checksum(&mut self, bytes: &mut [u8]) {
-        calc_checksum_g(bytes, None);
-    }
-    fn increase_seq(&mut self) {
-        self.seq_num = self.seq_num + 1;
-    }
-    fn final_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
-        if final_bytes[0] == self.echo_type {
-            self.increase_seq();
-            final_bytes[6] = (self.seq_num >> 8) as u8;
-            final_bytes[7] = (self.seq_num & 0x00FF) as u8;
-            self.calc_checksum(final_bytes);
-            return;
-        }
-        final_bytes[0] = self.echo_type;
-        final_bytes[1] = self.code;
-        // It's already zero, but still make sure
-        final_bytes[2] = 0;
-        final_bytes[3] = 0;
-
-        final_bytes[4] = self.identifier[0];
-        final_bytes[5] = self.identifier[1];
-        final_bytes[6] = (self.seq_num >> 8) as u8;
-        final_bytes[7] = (self.seq_num & 0x00FF) as u8;
-        final_bytes[8..].copy_from_slice(&self.echo_data[0..]);
-        self.calc_checksum(final_bytes);
-    }
-}
-
-fn main() -> Result<(), RingError> {
-    let arg: Vec<String> = env::args().collect();
-    let mut url = get_args(arg)?;
-    if !url.contains(":") {
-        url = format!("{}:0", url);
-    }
-    // let parsed_url = if let Some(u) = url.split_once(":") {
-    //     u.0
-    // } else {
-    //     &url
-    // };
-    let sock_addr = ip4_socket(&url)?;
-    let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
-    // socket.set_read_timeout(Some(time::Duration::from_millis(500)))?; // Also the timeout for ICMP packets
-
-    socket.set_nonblocking(true)?;
-
-    match socket.connect(&sock_addr.into()) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("{e}");
-        }
+        return None;
     };
-    println!(
-        // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
-
-        "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
-        url, sock_addr, 14
-
-    );
-
-    let (tx, rx) = channel::<RingMessage>();
-
-    let mut echo = EchoRequest::new();
-    let mut buf = [0u8; 64];
-
-    let mut recv_socket = socket.try_clone()?;
-
-    // This bit seems extremely hacky. I don't want to introduce new dependency for MPMC channel, as
-    // the std MPSC channel is not suitable for the task below.
-    //Also, use Condvar?
-    let cont = Arc::new(AtomicBool::new(true));
-    // let cont_recv = Arc::clone(&cont);
-    let cont_send = Arc::clone(&cont);
-
-    // Condvar! YAY!
-    let pcond = Arc::new((Mutex::new(false), Condvar::new()));
-    let scond = pcond.clone();
-
-    let handle = thread::spawn(move || {
-        let mut rtx = (0u32, 0u32, 0u32);
-        'outer: loop {
-            match rx.recv() {
-                // Don't need to check because there are only two variants and one is already coverd
-                Ok(m) => {
-                    let instant;
-                    if let RingMessage::Continue((_, i)) = m {
-                        instant = i;
-                        // Can't help spining
-                        while i.elapsed().as_millis() < 1000 && recv_socket.peek_sender().is_err() {
-                            // If the user presses CTRL + C while we're waiting for a reply, exit every thing
-                            if rx.try_recv().is_ok_and(|v| v == RingMessage::Stop) {
-                                break 'outer;
-                            }
-                            continue;
-                        }
-                    } else {
-                        // If there is a packet and that packet is ICMP echo reply, discard it
-                        if recv_socket.peek_sender().is_ok() {
-                            rtx.2 = rtx.2 + 1;
-                        }
-                        break;
-                    }
-                    // Weird hack to return as soon as CTRL + C is hit.
-                    // We could do it with timeout, but if we do, pressing CTRL + C
-                    // doesn't immediety return
-                    match recv_socket.read(&mut buf) {
-                        Ok(i) => {
-                            let time = instant.elapsed().as_millis();
-                            // If Ctrl + C is already pressed, but there is still data on the buffer,
-                            // we currently discard it.
-                            let len = ((buf[0] & 0x0F) << 2) as usize;
-                            // If the packet isn't ICMP echo reply, discard it.
-                            if buf[len] != 0 {
-                                rtx.2 = rtx.2 + 1;
-                                continue;
-                            }
-
-                            let ttl = buf[8];
-                            let seq = (buf[len + 6] as u16) << 8 | (buf[len + 7] as u16);
-                            if !check_checksum_g(&mut buf[len..i]) {
-                                rtx.1 = rtx.1 + 1;
-                            } else {
-                                rtx.0 = rtx.0 + 1;
-                            }
-                            println!(
-                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", (i - len), seq, ttl, time
-                            );
-                        }
-                        Err(_e) => {
-                            let _seq_num;
-                            if let RingMessage::Continue((i, _)) = m {
-                                _seq_num = i;
-                                // We actually report timed-out packets instead of just ignoring it.
-                                // Also destination host unrechable is just timed-out packets.
-                                println!(
-                                    "\x1b[1;31mPacket Timed Out. ICMP Sequence Packet: {}\x1b[0m",
-                                    _seq_num
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(_) => {
-                    break;
-                }
-            }
-        }
-        return rtx;
-    });
-
-    // Use a mut array of u8, so increasing the `seq_num` doesn't require creating a whole new copy of
-    // bytes.
-    let mut packet: [u8; 14] = [0; 14];
-    echo.final_bytes(&mut packet);
-
-    // Weirdly, you have to clone the `cont` variabel here. If cloned inside the `FnMut`, the compiler shouts
-
-    // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
-    // determine when to stop running the loop
-
-    let tx_clone = tx.clone();
-    ctrlc::set_handler(move || {
-        cont_send.store(false, std::sync::atomic::Ordering::Relaxed);
-        // Unwrap seems good here. There is not much we can do if sending
-        // stop messege fails. The best thing to do would be to exit the program.
-        let (lock, cond) = &*scond;
-        let mut lock = lock.lock().unwrap();
-        *lock = true;
-        cond.notify_all();
-        tx_clone.send(RingMessage::Stop).unwrap();
-    })
-    .expect("Failed to register callback");
-
-    // Starts measuring and taking stats
-    // We initialize the stat struct here to be as correct as possible while measuring the time taken.
-    // If we start early, the internal calculations may dilute the the time
-    let mut stats = RingStats::default();
-
-    let (lock, cond) = &*pcond;
-
-    loop {
-        let time = time::Instant::now();
-        socket.send(&packet)?;
-        if let Err(_) = tx.send(RingMessage::Continue((echo.seq_num, time))) {
-            return Err(RingError::ChannelSendError);
-        };
-        stats.packet_sent = stats.packet_sent + 1;
-        echo.final_bytes(&mut packet);
-        let mut lock = lock.lock().unwrap();
-        let res = cond
-            .wait_timeout(lock, time::Duration::from_secs(1))
-            .unwrap();
-        lock = res.0;
-        if *lock {
-            drop(tx);
-            break;
-        }
-    }
-    // Add code here to give the diagnostics result of all the times Pinged.
-    let (sucsess, loss, discard) = match handle.join() {
-        Ok((s, l, d)) => (s, l, d),
-        Err(_) => (0, 0, 0),
-    };
-    stats.packet_sent = stats.packet_sent - discard;
-    stats.loss = loss + (stats.packet_sent - sucsess);
-    stats.successful = sucsess;
-    println!("\n\x1b[1;32m------------Ring Stats------------\x1b[0m");
-    println!(
-        "\n\x1b[1;32mRinged!\x1b[0m Received \x1b[1;32m{} packets\x1b[0m of  \x1b[1;32m{} total packets,\x1b[0m with \x1b[1;31m{}% loss!\x1b[0m Pinged for \x1b[1;32m{} seconds\x1b[0m.",
-        stats.successful,
-        stats.packet_sent,
-        ((stats.loss * 100) / stats.packet_sent as u32),
-        stats.time.elapsed().as_secs()
-    );
-
-    // Free Up the socket just in case
-    socket.shutdown(std::net::Shutdown::Both)?;
-    Ok(())
+    Some(addr)
 }
-// \x1b[1m
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let opts = build_options();
+    let matches = if let Ok(m) = opts.parse(&args[1..]) {
+        m
+    } else {
+        eprintln!("Failed to parse command-line arguments");
+        return;
+    };
+
+    let addr = if let Some(a) = cli_actions(&args[0], matches) {
+        a
+    } else {
+        eprintln!("\x1b[1;31mError: Missing Url\x1b[0");
+        return;
+    };
+}
+
+// TODO: Change the function signature to not accept anything
+// TODO: Convert to main function & don't return anything
+pub fn get_args(args: Vec<String>) -> Result<String, RingError> {
+    // let args: Vec<String> = env::args().collect();
+    let opts = build_options();
+    let matches = if let Ok(m) = opts.parse(&args[1..]) {
+        m
+    } else {
+        eprintln!("Failed to parse command-line arguments");
+        return Err(RingError::ArgError);
+    };
+
+    if let Some(addr) = cli_actions(&args[0], matches) {
+        Ok(addr)
+    } else {
+        Err(RingError::ArgError)
+    }
+}
