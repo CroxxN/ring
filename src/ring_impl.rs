@@ -249,36 +249,37 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
     return rtx;
 }
 
-fn main() -> Result<(), RingError> {
-    let arg: Vec<String> = env::args().collect();
-    let mut url = get_args(arg)?;
-    if !url.contains(":") {
-        url = format!("{}:0", url);
-    }
-    // let parsed_url = if let Some(u) = url.split_once(":") {
-    //     u.0
-    // } else {
-    //     &url
+pub fn run(socket: &Socket) -> Result<(), RingError> {
+    // let arg: Vec<String> = env::args().collect();
+    // let mut url = get_args(arg)?;
+    // if !url.contains(":") {
+    //     url = format!("{}:0", url);
+    // }
+    // // let parsed_url = if let Some(u) = url.split_once(":") {
+    // //     u.0
+    // // } else {
+    // //     &url
+    // // };
+    // let sock_addr = ip4_socket(&url)?;
+    // let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
+    // // socket.set_read_timeout(Some(time::Duration::from_millis(500)))?; // Also the timeout for ICMP packets
+
+    // socket.set_nonblocking(true)?;
+
+    // match socket.connect(&sock_addr.into()) {
+    //     Ok(()) => {}
+    //     Err(e) => {
+    //         println!("{e}");
+    //     }
     // };
-    let sock_addr = ip4_socket(&url)?;
-    let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
-    // socket.set_read_timeout(Some(time::Duration::from_millis(500)))?; // Also the timeout for ICMP packets
 
-    socket.set_nonblocking(true)?;
+    // println!(
+    //     // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
 
-    match socket.connect(&sock_addr.into()) {
-        Ok(()) => {}
-        Err(e) => {
-            println!("{e}");
-        }
-    };
-    println!(
-        // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
+    //     "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
+    //     url, sock_addr, 14
 
-        "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
-        url, sock_addr, 14
-
-    );
+    // );
 
     let (tx, rx) = channel::<RingMessage>();
 

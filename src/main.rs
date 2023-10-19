@@ -66,6 +66,9 @@ impl RingOptions {
         }
         Ok(())
     }
+    fn get_socket(&self) -> &Socket {
+        &self.socket
+    }
 }
 // TODO: Add more cli options like choosing between IP modes
 // and number of pings
@@ -111,7 +114,7 @@ fn build_options() -> Options {
 }
 
 // Doesn't return anything because it handles all errors by displaying the help message.
-fn cli_actions(pname: &str, matches: Matches) -> Option<String> {
+fn cli_actions(pname: &str, matches: Matches) -> Option<RingOptions> {
     // TODO: remove the unwrap
     let mut cli_options = RingOptions::new().unwrap();
     if matches.opt_present("h") {
@@ -143,7 +146,7 @@ fn cli_actions(pname: &str, matches: Matches) -> Option<String> {
 
         return None;
     };
-    Some(addr)
+    Some(cli_options)
 }
 
 fn main() {
@@ -156,29 +159,34 @@ fn main() {
         return;
     };
 
-    let addr = if let Some(a) = cli_actions(&args[0], matches) {
-        a
+    let opt = if let Some(opt) = cli_actions(&args[0], matches) {
+        opt
     } else {
         eprintln!("\x1b[1;31mError: Missing Url\x1b[0");
+        return;
+    };
+    let socket = opt.get_socket();
+    if let Err(e) = ring_impl::run(socket) {
+        _ = e;
         return;
     };
 }
 
 // TODO: Change the function signature to not accept anything
 // TODO: Convert to main function & don't return anything
-pub fn get_args(args: Vec<String>) -> Result<String, RingError> {
-    // let args: Vec<String> = env::args().collect();
-    let opts = build_options();
-    let matches = if let Ok(m) = opts.parse(&args[1..]) {
-        m
-    } else {
-        eprintln!("Failed to parse command-line arguments");
-        return Err(RingError::ArgError);
-    };
+// pub fn get_args(args: Vec<String>) -> Result<String, RingError> {
+//     // let args: Vec<String> = env::args().collect();
+//     let opts = build_options();
+//     let matches = if let Ok(m) = opts.parse(&args[1..]) {
+//         m
+//     } else {
+//         eprintln!("Failed to parse command-line arguments");
+//         return Err(RingError::ArgError);
+//     };
 
-    if let Some(addr) = cli_actions(&args[0], matches) {
-        Ok(addr)
-    } else {
-        Err(RingError::ArgError)
-    }
-}
+//     if let Some(addr) = cli_actions(&args[0], matches) {
+//         Ok(addr)
+//     } else {
+//         Err(RingError::ArgError)
+//     }
+// }
