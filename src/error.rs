@@ -33,16 +33,16 @@ impl Display for RingError {
                 write!(f, "\x1b[1;31mInvalid Number of Arguments\x1b[0m")
             }
             RingError::IoError(e) => {
-                write!(f, "\x1b[1;31m{e}\x1b[0md")
+                write!(f, "\x1b[1;31m{e}\x1b[0m")
             }
             RingError::DestParseError(e) => {
-                write!(f, "\x1b[1;31m{e}\x1b[0md")
+                write!(f, "\x1b[1;31m{e}\x1b[0m")
             }
             RingError::NetworkError => {
-                write!(f, "\x1b[1;31mNetwork Error Occured\x1b[0md")
+                write!(f, "\x1b[1;31mNetwork Error Occured\x1b[0m")
             }
             RingError::ChannelSendError => {
-                write!(f, "\x1b[1;31mFailed to transport data\x1b[0md")
+                write!(f, "\x1b[1;31mFailed to transport data\x1b[0m")
             }
         }
     }

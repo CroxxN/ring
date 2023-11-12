@@ -7,8 +7,12 @@ mod error;
 mod ring_impl;
 use error::RingError;
 use getopts::{Matches, Options};
-use socket2::{Domain, Protocol, Socket, Type};
-use std::{env, net::SocketAddr};
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::{
+    env,
+    net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
+    str::FromStr,
+};
 
 const VERSION: &'static str = "0.1";
 
@@ -18,6 +22,7 @@ struct RingOptions {
     ip: IP,
     ttl: u32,
     quite: bool,
+    addr: String,
 }
 
 #[derive(PartialEq)]
@@ -39,11 +44,13 @@ impl From<&str> for IP {
 impl RingOptions {
     fn new() -> Result<Self, RingError> {
         Ok(Self {
-            socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            socket: Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?,
             count: 0,
-            ip: IP::V6,
+            ip: IP::V4,
             ttl: 64,
             quite: false,
+            addr: String::new(),
         })
     }
     fn set_count(&mut self, count: u32) {
@@ -137,7 +144,7 @@ fn cli_actions(pname: &str, matches: Matches) -> Option<RingOptions> {
     }
 
     // Get the (only) positional argument
-    let addr = if !matches.free.is_empty() {
+    cli_options.addr = if !matches.free.is_empty() {
         matches.free[0].to_owned()
     } else {
         // "RED: Missing\RED: Destination Address"
@@ -166,8 +173,15 @@ fn main() {
         return;
     };
     let socket = opt.get_socket();
+    let addr = opt.addr.to_socket_addrs().unwrap().nth(0).unwrap();
+    match socket.connect(&SockAddr::from(addr)) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Error: {e}");
+        }
+    }
     if let Err(e) = ring_impl::run(socket) {
-        _ = e;
+        eprintln!("Error: {e}");
         return;
     };
 }
@@ -189,4 +203,4 @@ fn main() {
 //     } else {
 //         Err(RingError::ArgError)
 //     }
-// }
+//}
