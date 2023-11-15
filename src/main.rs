@@ -5,6 +5,7 @@
 
 mod error;
 mod ring_impl;
+use ctrlc::Error;
 use error::RingError;
 use getopts::{Matches, Options};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
@@ -13,6 +14,7 @@ use std::{
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     str::FromStr,
 };
+mod iputils;
 
 const VERSION: &'static str = "0.1";
 
@@ -31,6 +33,46 @@ enum IP {
     V6,
 }
 
+trait Ip {}
+
+impl Ip for IP {}
+
+fn ip4_socket(url: &str, ip_type: IP) -> Result<SocketAddr, RingError> {
+    let mut parsed_socket_vec = (url, 0).to_socket_addrs()?.into_iter();
+    // let addr = parsed_socket_vec.into_iter().try_for_each(|a| {
+    //     if a.is_ipv4() {
+    //         return std::ops::ControlFlow::Break(a);
+    //     }
+    //     std::ops::ControlFlow::Continue(())
+    // });
+    // // Use std::ops::ControlFlow::Break().break_value() when it stabalizes
+    // if let std::ops::ControlFlow::Break(s) = addr {
+    //     return Ok(s);
+    // } else {
+    //     return Err(RingError::NetworkError);
+    // }
+    if let Some(a) = parsed_socket_vec.next() {
+        match ip_type {
+            IP::V4 => {
+                if a.is_ipv4() {
+                    return Ok(a);
+                } else {
+                    return parsed_socket_vec.next_back().ok_or(RingError::NetworkError);
+                }
+            }
+            IP::V6 => {
+                if a.is_ipv6() {
+                    return Ok(a);
+                } else {
+                    return parsed_socket_vec.next_back().ok_or(RingError::NetworkError);
+                }
+            }
+        }
+    } else {
+        return Err(RingError::NetworkError);
+    }
+}
+
 impl From<&str> for IP {
     fn from(value: &str) -> Self {
         if value == "4" {
@@ -45,7 +87,7 @@ impl RingOptions {
     fn new() -> Result<Self, RingError> {
         Ok(Self {
             // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
-            socket: Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?,
+            socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
             count: 0,
             ip: IP::V4,
             ttl: 64,
@@ -156,34 +198,38 @@ fn cli_actions(pname: &str, matches: Matches) -> Option<RingOptions> {
     Some(cli_options)
 }
 
-fn main() {
+fn main() -> Result<(), RingError> {
     let args: Vec<String> = env::args().collect();
     let opts = build_options();
     let matches = if let Ok(m) = opts.parse(&args[1..]) {
         m
     } else {
         eprintln!("Failed to parse command-line arguments");
-        return;
+        return Ok(());
     };
 
     let opt = if let Some(opt) = cli_actions(&args[0], matches) {
         opt
     } else {
         eprintln!("\x1b[1;31mError: Missing Url\x1b[0");
-        return;
+        return Ok(());
     };
     let socket = opt.get_socket();
-    let addr = opt.addr.to_socket_addrs().unwrap().nth(0).unwrap();
+    let parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
+    let addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
     match socket.connect(&SockAddr::from(addr)) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Error: {e}");
         }
     }
+    let address = socket.local_addr().unwrap().as_socket_ipv6().unwrap();
+    dbg!(address);
     if let Err(e) = ring_impl::run(socket) {
         eprintln!("Error: {e}");
-        return;
+        return Ok(());
     };
+    Ok(())
 }
 
 // TODO: Change the function signature to not accept anything

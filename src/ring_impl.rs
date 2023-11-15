@@ -297,6 +297,7 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
     let scond = pcond.clone();
 
     let recv_socket = socket.try_clone()?;
+    socket.set_nonblocking(true)?; // IMPORTANT
     let handle = thread::spawn(move || handle_returned(rx, recv_socket));
 
     // Use a mut array of u8, so increasing the `seq_num` doesn't require creating a whole new copy of
