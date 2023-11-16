@@ -1,4 +1,5 @@
 use crate::error::RingError;
+use crate::iputils::ip6;
 use ctrlc;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
@@ -46,7 +47,7 @@ impl Default for EchoRequest {
     fn default() -> Self {
         Self {
             echo_type: 8,
-            code: 0,
+            code: 137,
             identifier: [0; 2],
             seq_num: 1,
             // Fixed Constant Data used to Ping the server
@@ -138,7 +139,8 @@ fn check_checksum_g(bytes: &mut [u8]) -> bool {
     init_checksum == final_checksum
 }
 
-impl EchoRequest {
+// impl EchoRequest {
+impl<'b> ip6::EchoICMPv6<'b> {
     fn new() -> Self {
         Self::default()
     }
@@ -146,6 +148,9 @@ impl EchoRequest {
     // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
     #[inline]
     fn calc_checksum(&mut self, bytes: &mut [u8]) {
+        // let local_adr = self.
+        // let psuedo_bytes: &mut [u8] = &mut [0];
+        // psuedo_bytes.copy_from_slice(bytes);
         calc_checksum_g(bytes, None);
     }
     fn increase_seq(&mut self) {
@@ -169,7 +174,7 @@ impl EchoRequest {
         final_bytes[5] = self.identifier[1];
         final_bytes[6] = (self.seq_num >> 8) as u8;
         final_bytes[7] = (self.seq_num & 0x00FF) as u8;
-        final_bytes[8..].copy_from_slice(&self.echo_data[0..]);
+        final_bytes[8..].copy_from_slice(&self.echo_data[0..6]);
         self.calc_checksum(final_bytes);
     }
 }
@@ -283,8 +288,18 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     let (tx, rx) = channel::<RingMessage>();
 
-    let mut echo = EchoRequest::new();
+    let mut echo = ip6::EchoICMPv6::default();
+    let address = socket.local_addr()?.as_socket_ipv6();
 
+    let ip_as_string;
+    if let Some(addr) = address {
+        ip_as_string = addr.to_string();
+    } else {
+        return Ok(());
+    }
+    echo.source = ip_as_string.as_bytes().try_into().unwrap();
+
+    // TEST: change
     // This bit seems extremely hacky. I don't want to introduce new dependency for MPMC channel, as
     // the std MPSC channel is not suitable for the task below.
     //Also, use Condvar?

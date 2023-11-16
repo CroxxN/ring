@@ -17,6 +17,7 @@ use std::{
 mod iputils;
 
 const VERSION: &'static str = "0.1";
+pub(crate) const DATA: &[u8; 7] = b"SWIKISS";
 
 struct RingOptions {
     socket: Socket,
@@ -31,46 +32,6 @@ struct RingOptions {
 enum IP {
     V4,
     V6,
-}
-
-trait Ip {}
-
-impl Ip for IP {}
-
-fn ip4_socket(url: &str, ip_type: IP) -> Result<SocketAddr, RingError> {
-    let mut parsed_socket_vec = (url, 0).to_socket_addrs()?.into_iter();
-    // let addr = parsed_socket_vec.into_iter().try_for_each(|a| {
-    //     if a.is_ipv4() {
-    //         return std::ops::ControlFlow::Break(a);
-    //     }
-    //     std::ops::ControlFlow::Continue(())
-    // });
-    // // Use std::ops::ControlFlow::Break().break_value() when it stabalizes
-    // if let std::ops::ControlFlow::Break(s) = addr {
-    //     return Ok(s);
-    // } else {
-    //     return Err(RingError::NetworkError);
-    // }
-    if let Some(a) = parsed_socket_vec.next() {
-        match ip_type {
-            IP::V4 => {
-                if a.is_ipv4() {
-                    return Ok(a);
-                } else {
-                    return parsed_socket_vec.next_back().ok_or(RingError::NetworkError);
-                }
-            }
-            IP::V6 => {
-                if a.is_ipv6() {
-                    return Ok(a);
-                } else {
-                    return parsed_socket_vec.next_back().ok_or(RingError::NetworkError);
-                }
-            }
-        }
-    } else {
-        return Err(RingError::NetworkError);
-    }
 }
 
 impl From<&str> for IP {
@@ -216,37 +177,16 @@ fn main() -> Result<(), RingError> {
     };
     let socket = opt.get_socket();
     let parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
-    let addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
+    let addr = iputils::ip6::get_ip6_addr(parsed_addr)?;
     match socket.connect(&SockAddr::from(addr)) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Error: {e}");
         }
     }
-    let address = socket.local_addr().unwrap().as_socket_ipv6().unwrap();
-    dbg!(address);
     if let Err(e) = ring_impl::run(socket) {
         eprintln!("Error: {e}");
         return Ok(());
     };
     Ok(())
 }
-
-// TODO: Change the function signature to not accept anything
-// TODO: Convert to main function & don't return anything
-// pub fn get_args(args: Vec<String>) -> Result<String, RingError> {
-//     // let args: Vec<String> = env::args().collect();
-//     let opts = build_options();
-//     let matches = if let Ok(m) = opts.parse(&args[1..]) {
-//         m
-//     } else {
-//         eprintln!("Failed to parse command-line arguments");
-//         return Err(RingError::ArgError);
-//     };
-
-//     if let Some(addr) = cli_actions(&args[0], matches) {
-//         Ok(addr)
-//     } else {
-//         Err(RingError::ArgError)
-//     }
-//}
