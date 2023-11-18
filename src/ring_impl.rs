@@ -1,4 +1,5 @@
 use crate::error::RingError;
+use crate::iputils::ip4;
 use crate::iputils::ip6;
 use ctrlc;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -127,6 +128,26 @@ fn calc_checksum_g(bytes: &mut [u8], container: Option<&mut u16>) {
     }
 }
 
+fn calc_psuedo_checksum(bytes: &mut [u8]) -> u16 {
+    let new_bytes: &[u8] = &[0];
+
+    let mut sum = 0u32;
+    for word in new_bytes.chunks(2) {
+        let mut part = u16::from(word[0]) << 8;
+        if word.len() > 1 {
+            part += u16::from(word[1]);
+        }
+        sum = sum.wrapping_add(u32::from(part));
+    }
+
+    while (sum >> 16) > 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+
+    let sum = !sum as u16;
+    return sum;
+}
+
 // Accepts a data buffer with already calculated and checksum-ed fields
 // Checks if the checksum provided in the value matches with the one we
 // calculate. If they don't match, some data has been corrupted
@@ -139,8 +160,8 @@ fn check_checksum_g(bytes: &mut [u8]) -> bool {
     init_checksum == final_checksum
 }
 
-// impl EchoRequest {
-impl<'b> ip6::EchoICMPv6<'b> {
+impl EchoRequest {
+    // impl<'b> ip6::EchoICMPv6<'b> {
     fn new() -> Self {
         Self::default()
     }
@@ -288,16 +309,16 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     let (tx, rx) = channel::<RingMessage>();
 
-    let mut echo = ip6::EchoICMPv6::default();
+    let mut echo = EchoRequest::new();
     let address = socket.local_addr()?.as_socket_ipv6();
 
-    let ip_as_string;
-    if let Some(addr) = address {
-        ip_as_string = addr.to_string();
-    } else {
-        return Ok(());
-    }
-    echo.source = ip_as_string.as_bytes().try_into().unwrap();
+    // let ip_as_string;
+    // if let Some(addr) = address {
+    //     ip_as_string = addr.to_string();
+    // } else {
+    //     return Ok(());
+    // }
+    // echo.source = ip_as_string.as_bytes().try_into().unwrap();
 
     // TEST: change
     // This bit seems extremely hacky. I don't want to introduce new dependency for MPMC channel, as
@@ -328,9 +349,9 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
     let tx_clone = tx.clone();
     ctrlc::set_handler(move || {
         cont_send.store(false, std::sync::atomic::Ordering::Relaxed);
+        let (lock, cond) = &*scond;
         // Unwrap seems good here. There is not much we can do if sending
         // stop messege fails. The best thing to do would be to exit the program.
-        let (lock, cond) = &*scond;
         let mut lock = lock.lock().expect("Failed to aquire the lock");
         *lock = true;
         cond.notify_all();
@@ -340,7 +361,7 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     // Starts measuring and taking stats
     // We initialize the stat struct here to be as correct as possible while measuring the time taken.
-    // If we start early, the internal calculations may dilute the the time
+    // If we start early, the internal calculations may dilute the time
     let mut stats = RingStats::default();
 
     let (lock, cond) = &*pcond;

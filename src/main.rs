@@ -48,7 +48,8 @@ impl RingOptions {
     fn new() -> Result<Self, RingError> {
         Ok(Self {
             // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
-            socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            socket: Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?,
             count: 0,
             ip: IP::V4,
             ttl: 64,
@@ -177,7 +178,7 @@ fn main() -> Result<(), RingError> {
     };
     let socket = opt.get_socket();
     let parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
-    let addr = iputils::ip6::get_ip6_addr(parsed_addr)?;
+    let addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
     match socket.connect(&SockAddr::from(addr)) {
         Ok(_) => {}
         Err(e) => {
