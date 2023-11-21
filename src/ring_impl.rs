@@ -1,6 +1,8 @@
-use crate::error::RingError;
 use crate::iputils::ip4;
+use crate::iputils::ip4::EchoICMPv4;
 use crate::iputils::ip6;
+use crate::iputils::ip6::EchoICMPv6;
+use crate::{error::RingError, DATA_LENGTH};
 use ctrlc;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
@@ -42,18 +44,20 @@ struct EchoRequest {
     identifier: [u8; 2],
     seq_num: u16,
     echo_data: [u8; 6],
+    init_check: u32,
 }
 
 impl Default for EchoRequest {
     fn default() -> Self {
         Self {
             echo_type: 8,
-            code: 137,
+            code: 0,
             identifier: [0; 2],
             seq_num: 1,
             // Fixed Constant Data used to Ping the server
             // It's completely arbitrary
             echo_data: b"MITTEN".to_owned(),
+            init_check: 0,
         }
     }
 }
@@ -100,53 +104,40 @@ fn ip4_socket(url: &str) -> Result<SocketAddr, RingError> {
 // Making this function global such that it's not tied to a `EchoRequest` struct
 // Calculating checksums is required when data is returned, so instead of typing it
 // down as a method, it's global
-fn calc_checksum_g(bytes: &mut [u8], container: Option<&mut u16>) {
-    bytes[2] = 0;
-    bytes[3] = 0;
-    let mut sum = 0u32;
-    for word in bytes.chunks(2) {
-        let mut part = u16::from(word[0]) << 8;
-        if word.len() > 1 {
-            part += u16::from(word[1]);
-        }
-        sum = sum.wrapping_add(u32::from(part));
-    }
 
-    while (sum >> 16) > 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-
-    let sum = !sum as u16;
-    // If a container is provided, return the checksum through the container
-    if let Some(c) = container {
-        *c = sum;
-    }
-    // If not, just append it to the original data buffer
-    else {
-        bytes[2] = (sum >> 8) as u8;
-        bytes[3] = (sum & 0xff) as u8;
-    }
+fn calculate_chcksm_g() {
+    unimplemented!()
 }
 
-fn calc_psuedo_checksum(bytes: &mut [u8]) -> u16 {
-    let new_bytes: &[u8] = &[0];
+// fn calc_psuedo_checksum(bytes: &mut [u8]) -> u16 {
+//     let new_bytes: &mut [u8] = &mut [0];
+//     // new_bytes[0..4].copy_from_slice();
+//     let mut sum = 0u32;
+//     // Source Address
+//     new_bytes[0..12].copy_from_slice(unimplemented!());
+//     // Destination Address
+//     new_bytes[12..28].copy_from_slice(unimplemented!());
+//     // ICMPv6 length
+//     new_bytes[28..32].copy_from_slice(unreachable!());
+//     // zeros + next header
+//     new_bytes[32..36].copy_from_slice(unreachable!());
+//     // Actual ICMPv6 data
+//     new_bytes[36..].copy_from_slice(&bytes);
+//     for word in new_bytes.chunks(2) {
+//         let mut part = u16::from(word[0]) << 8;
+//         if word.len() > 1 {
+//             part += u16::from(word[1]);
+//         }
+//         sum = sum.wrapping_add(u32::from(part));
+//     }
 
-    let mut sum = 0u32;
-    for word in new_bytes.chunks(2) {
-        let mut part = u16::from(word[0]) << 8;
-        if word.len() > 1 {
-            part += u16::from(word[1]);
-        }
-        sum = sum.wrapping_add(u32::from(part));
-    }
+//     while (sum >> 16) > 0 {
+//         sum = (sum & 0xffff) + (sum >> 16);
+//     }
 
-    while (sum >> 16) > 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-
-    let sum = !sum as u16;
-    return sum;
-}
+//     let sum = !sum as u16;
+//     return sum;
+// }
 
 // Accepts a data buffer with already calculated and checksum-ed fields
 // Checks if the checksum provided in the value matches with the one we
@@ -154,51 +145,31 @@ fn calc_psuedo_checksum(bytes: &mut [u8]) -> u16 {
 // Making global for the same resean as the above function + it can't be
 // tied down to any struct
 fn check_checksum_g(bytes: &mut [u8]) -> bool {
-    let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
-    let mut final_checksum = 0;
-    calc_checksum_g(bytes, Some(&mut final_checksum));
-    init_checksum == final_checksum
-}
-
-impl EchoRequest {
-    // impl<'b> ip6::EchoICMPv6<'b> {
-    fn new() -> Self {
-        Self::default()
-    }
-    // Change this function to accept a bool to indicate where it should return the checksum or not
-    // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
-    #[inline]
-    fn calc_checksum(&mut self, bytes: &mut [u8]) {
-        // let local_adr = self.
-        // let psuedo_bytes: &mut [u8] = &mut [0];
-        // psuedo_bytes.copy_from_slice(bytes);
-        calc_checksum_g(bytes, None);
-    }
-    fn increase_seq(&mut self) {
-        self.seq_num = self.seq_num + 1;
-    }
-    fn final_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
-        if final_bytes[0] == self.echo_type {
-            self.increase_seq();
-            final_bytes[6] = (self.seq_num >> 8) as u8;
-            final_bytes[7] = (self.seq_num & 0x00FF) as u8;
-            self.calc_checksum(final_bytes);
-            return;
+    // let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
+    // let mut final_checksum = 0;
+    let mut chck = 0u32;
+    for word in bytes.chunks(2) {
+        let mut part = u16::from(word[0]) << 8;
+        if word.len() > 1 {
+            part += u16::from(word[1]);
         }
-        final_bytes[0] = self.echo_type;
-        final_bytes[1] = self.code;
-        // It's already zero, but still make sure
-        final_bytes[2] = 0;
-        final_bytes[3] = 0;
-
-        final_bytes[4] = self.identifier[0];
-        final_bytes[5] = self.identifier[1];
-        final_bytes[6] = (self.seq_num >> 8) as u8;
-        final_bytes[7] = (self.seq_num & 0x00FF) as u8;
-        final_bytes[8..].copy_from_slice(&self.echo_data[0..6]);
-        self.calc_checksum(final_bytes);
+        chck = chck.wrapping_add(u32::from(part));
     }
+
+    while (chck >> 16) > 0 {
+        chck = (chck & 0xffff) + (chck >> 16);
+    }
+
+    let chck = !chck as u16;
+    if chck == 0 {
+        return true;
+    }
+    false
+    // calc_checksum_g(init_check, bytes, Some(&mut final_checksum));
+    // init_checksum == final_checksum
 }
+
+// impl EchoRequest {
 
 fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> (u32, u32, u32) {
     let mut rtx = (0u32, 0u32, 0u32);
@@ -309,8 +280,8 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     let (tx, rx) = channel::<RingMessage>();
 
-    let mut echo = EchoRequest::new();
-    let address = socket.local_addr()?.as_socket_ipv6();
+    let mut echo = EchoICMPv4::new();
+    // let address = socket.local_addr()?.as_socket_ipv6().unwrap().ip().octets();
 
     // let ip_as_string;
     // if let Some(addr) = address {
@@ -338,7 +309,7 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     // Use a mut array of u8, so increasing the `seq_num` doesn't require creating a whole new copy of
     // bytes.
-    let mut packet: [u8; 14] = [0; 14];
+    let mut packet: [u8; DATA_LENGTH] = [0; DATA_LENGTH];
     echo.final_bytes(&mut packet);
 
     // Weirdly, you have to clone the `cont` variabel here. If cloned inside the `FnMut`, the compiler shouts

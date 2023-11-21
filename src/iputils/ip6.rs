@@ -7,14 +7,14 @@ use crate::DATA;
 
 pub fn get_ip6_addr(mut socket: IntoIter<SocketAddr>) -> Result<SocketAddr, RingError> {
     // Very hacky
-    let ipv4addr = socket.try_for_each(|addr| {
+    let ipv6addr = socket.try_for_each(|addr| {
         if addr.is_ipv6() {
             return ControlFlow::Break(addr);
         }
         ControlFlow::Continue(())
     });
 
-    if let ControlFlow::Break(a) = ipv4addr {
+    if let ControlFlow::Break(a) = ipv6addr {
         Ok(a)
     } else {
         Err(RingError::NetworkError)
@@ -24,7 +24,7 @@ pub fn get_ip6_addr(mut socket: IntoIter<SocketAddr>) -> Result<SocketAddr, Ring
 #[derive(Debug, PartialEq, Eq)]
 pub struct EchoICMPv6<'a> {
     // pseudo header: https://en.wikipedia.org/wiki/ICMPv6#Checksum
-    pub source: &'a [u8; 12], // 96 bytes source adderes
+    pub source: &'a [u8; 12], // 96 bits source adderes
     pub destination: &'a [u8; 12],
     pub length: u32,
     pub zeros: u32,

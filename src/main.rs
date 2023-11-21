@@ -13,11 +13,14 @@ use std::{
     env,
     net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
     str::FromStr,
+    u8,
 };
 mod iputils;
+mod utils;
 
 const VERSION: &'static str = "0.1";
 pub(crate) const DATA: &[u8; 7] = b"SWIKISS";
+pub(crate) const DATA_LENGTH: usize = 8 + DATA.len(); // fixed 8 bytes data field
 
 struct RingOptions {
     socket: Socket,
@@ -49,9 +52,19 @@ impl RingOptions {
         Ok(Self {
             // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
             // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            count: 0,
+            ip: IP::V6,
+            ttl: 64,
+            quite: false,
+            addr: String::new(),
+        })
+    }
+    fn new_ip4() -> Result<Self, RingError> {
+        Ok(Self {
             socket: Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?,
             count: 0,
-            ip: IP::V4,
+            ip: IP::V6,
             ttl: 64,
             quite: false,
             addr: String::new(),
@@ -127,7 +140,7 @@ fn build_options() -> Options {
 // Doesn't return anything because it handles all errors by displaying the help message.
 fn cli_actions(pname: &str, matches: Matches) -> Option<RingOptions> {
     // TODO: remove the unwrap
-    let mut cli_options = RingOptions::new().unwrap();
+    let mut cli_options;
     if matches.opt_present("h") {
         print_help(pname);
         return None;
@@ -135,6 +148,11 @@ fn cli_actions(pname: &str, matches: Matches) -> Option<RingOptions> {
     if matches.opt_present("V") {
         print_version(pname);
         return None;
+    }
+    if matches.opt_present("4") {
+        cli_options = RingOptions::new_ip4().unwrap()
+    } else {
+        cli_options = RingOptions::new().unwrap()
     }
     // TODO: Maybe check and use `unwrap_or_default()`
     if let Some(c) = matches.opt_str("c") {
@@ -170,6 +188,12 @@ fn main() -> Result<(), RingError> {
         return Ok(());
     };
 
+    let ip = if matches.opt_present("4") {
+        IP::V4
+    } else {
+        IP::V6
+    };
+
     let opt = if let Some(opt) = cli_actions(&args[0], matches) {
         opt
     } else {
@@ -178,7 +202,16 @@ fn main() -> Result<(), RingError> {
     };
     let socket = opt.get_socket();
     let parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
-    let addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
+    let addr;
+    if ip == IP::V4 {
+        addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
+    } else {
+        addr = iputils::ip6::get_ip6_addr(parsed_addr)?;
+    }
+    let octets = match addr.ip() {
+        std::net::IpAddr::V6(i) => Some(i.octets()),
+        _ => None,
+    };
     match socket.connect(&SockAddr::from(addr)) {
         Ok(_) => {}
         Err(e) => {
