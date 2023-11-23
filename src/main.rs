@@ -1,22 +1,14 @@
 // TODO: Remove these ignored warnings
-#![allow(unused_imports)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
 mod error;
 mod ring_impl;
-use ctrlc::Error;
 use error::RingError;
 use getopts::{Matches, Options};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::{
-    env,
-    net::{SocketAddr, SocketAddrV4, ToSocketAddrs},
-    str::FromStr,
-    u8,
-};
+use std::{env, net::ToSocketAddrs};
 mod iputils;
-mod utils;
 
 const VERSION: &'static str = "0.1";
 pub(crate) const DATA: &[u8; 7] = b"SWIKISS";
@@ -193,7 +185,7 @@ fn main() -> Result<(), RingError> {
     } else {
         IP::V6
     };
-
+    let url = matches.free[0].clone();
     let opt = if let Some(opt) = cli_actions(&args[0], matches) {
         opt
     } else {
@@ -218,6 +210,13 @@ fn main() -> Result<(), RingError> {
             eprintln!("Error: {e}");
         }
     }
+    println!(
+     // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
+
+     "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
+     url, addr, 14
+     );
+
     if let Err(e) = ring_impl::run(socket) {
         eprintln!("Error: {e}");
         return Ok(());

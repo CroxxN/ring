@@ -1,4 +1,4 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::ops::ControlFlow;
 use std::vec::IntoIter;
 
@@ -40,11 +40,13 @@ pub struct EchoICMPv6<'a> {
 impl<'a> Default for EchoICMPv6<'a> {
     fn default() -> Self {
         Self {
+            // psuedo-header
             source: &[0; 12],
             destination: &[0; 12],
             length: 15,
             next_header: 58, // const
             zeros: 0,
+            // ICMPv6 headers. real.
             echo_type: 128,
             code: 0,
             identifier: [0; 2],

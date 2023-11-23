@@ -1,14 +1,9 @@
-use crate::iputils::ip4;
 use crate::iputils::ip4::EchoICMPv4;
-use crate::iputils::ip6;
-use crate::iputils::ip6::EchoICMPv6;
 use crate::{error::RingError, DATA_LENGTH};
 use ctrlc;
-use socket2::{Domain, Protocol, Socket, Type};
+use socket2::Socket;
 use std::{
-    env,
     io::Read,
-    net::{SocketAddr, ToSocketAddrs},
     sync::{
         atomic::AtomicBool,
         mpsc::{self, channel},
@@ -22,7 +17,7 @@ struct RingStats {
     packet_sent: u32,
     successful: u32,
     loss: u32,
-    // Better than using `Duration` as `Instant` exits specially for this purpose
+    // Better than using `Duration` as `Instant` exists specially for this purpose
     time: time::Instant,
 }
 
@@ -33,31 +28,6 @@ impl Default for RingStats {
             successful: 0,
             loss: 0,
             time: time::Instant::now(),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct EchoRequest {
-    echo_type: u8,
-    code: u8,
-    identifier: [u8; 2],
-    seq_num: u16,
-    echo_data: [u8; 6],
-    init_check: u32,
-}
-
-impl Default for EchoRequest {
-    fn default() -> Self {
-        Self {
-            echo_type: 8,
-            code: 0,
-            identifier: [0; 2],
-            seq_num: 1,
-            // Fixed Constant Data used to Ping the server
-            // It's completely arbitrary
-            echo_data: b"MITTEN".to_owned(),
-            init_check: 0,
         }
     }
 }
@@ -83,31 +53,6 @@ enum RingMessage {
 // Better yet, the whole function could be separated over the another module entirely
 // So, this function is curretly unstable, and may break over time
 // TODO: Make this function generic over both IP versions
-
-fn ip4_socket(url: &str) -> Result<SocketAddr, RingError> {
-    let parsed_socket_vec = url.to_socket_addrs()?;
-    let addr = parsed_socket_vec.into_iter().try_for_each(|a| {
-        if a.is_ipv4() {
-            return std::ops::ControlFlow::Break(a);
-        }
-        std::ops::ControlFlow::Continue(())
-    });
-    // Use std::ops::ControlFlow::Break().break_value() when it stabalizes
-    if let std::ops::ControlFlow::Break(s) = addr {
-        return Ok(s);
-    } else {
-        return Err(RingError::NetworkError);
-    }
-}
-
-// Global Checksum Calculator
-// Making this function global such that it's not tied to a `EchoRequest` struct
-// Calculating checksums is required when data is returned, so instead of typing it
-// down as a method, it's global
-
-fn calculate_chcksm_g() {
-    unimplemented!()
-}
 
 // fn calc_psuedo_checksum(bytes: &mut [u8]) -> u16 {
 //     let new_bytes: &mut [u8] = &mut [0];
@@ -139,11 +84,9 @@ fn calculate_chcksm_g() {
 //     return sum;
 // }
 
-// Accepts a data buffer with already calculated and checksum-ed fields
-// Checks if the checksum provided in the value matches with the one we
-// calculate. If they don't match, some data has been corrupted
-// Making global for the same resean as the above function + it can't be
-// tied down to any struct
+// Accepts a data buffer checks if the checksum is correct.
+// If not, some data has been corrupted
+// Making global as it can't be tied down to any struct
 fn check_checksum_g(bytes: &mut [u8]) -> bool {
     // let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
     // let mut final_checksum = 0;
@@ -161,15 +104,8 @@ fn check_checksum_g(bytes: &mut [u8]) -> bool {
     }
 
     let chck = !chck as u16;
-    if chck == 0 {
-        return true;
-    }
-    false
-    // calc_checksum_g(init_check, bytes, Some(&mut final_checksum));
-    // init_checksum == final_checksum
+    chck == 0
 }
-
-// impl EchoRequest {
 
 fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> (u32, u32, u32) {
     let mut rtx = (0u32, 0u32, 0u32);
@@ -194,7 +130,7 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                 } else {
                     // If there is a packet and that packet is ICMP echo reply, discard it
                     if recv_socket.peek_sender().is_ok() {
-                        rtx.2 = rtx.2 + 1;
+                        rtx.2 += 1;
                     }
                     break;
                 }
@@ -206,8 +142,8 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                         let time = instant.elapsed().as_millis();
                         // If Ctrl + C is already pressed, but there is still data on the buffer,
                         // we currently discard it.
-                        let len = ((buf[0] & 0x0F) << 2) as usize;
-                        // If the packet isn't ICMP echo reply, discard it.
+                        let len = ((buf[0] & 0x0F) << 2) as usize; // wtf?
+                                                                   // If the packet isn't ICMP echo reply, discard it.
                         if buf[len] != 0 {
                             rtx.2 = rtx.2 + 1;
                             continue;
@@ -218,11 +154,11 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                         if !check_checksum_g(&mut buf[len..i]) {
                             rtx.1 = rtx.1 + 1;
                         } else {
-                            rtx.0 = rtx.0 + 1;
-                        }
-                        println!(
+                            println!(
                         "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", (i - len), seq, ttl, time
                             );
+                            rtx.0 = rtx.0 + 1;
+                        }
                     }
                     Err(_e) => {
                         let _seq_num;
@@ -247,37 +183,6 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
 }
 
 pub fn run(socket: &Socket) -> Result<(), RingError> {
-    // let arg: Vec<String> = env::args().collect();
-    // let mut url = get_args(arg)?;
-    // if !url.contains(":") {
-    //     url = format!("{}:0", url);
-    // }
-    // // let parsed_url = if let Some(u) = url.split_once(":") {
-    // //     u.0
-    // // } else {
-    // //     &url
-    // // };
-    // let sock_addr = ip4_socket(&url)?;
-    // let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
-    // // socket.set_read_timeout(Some(time::Duration::from_millis(500)))?; // Also the timeout for ICMP packets
-
-    // socket.set_nonblocking(true)?;
-
-    // match socket.connect(&sock_addr.into()) {
-    //     Ok(()) => {}
-    //     Err(e) => {
-    //         println!("{e}");
-    //     }
-    // };
-
-    // println!(
-    //     // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
-
-    //     "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
-    //     url, sock_addr, 14
-
-    // );
-
     let (tx, rx) = channel::<RingMessage>();
 
     let mut echo = EchoICMPv4::new();
@@ -310,8 +215,8 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
     // Use a mut array of u8, so increasing the `seq_num` doesn't require creating a whole new copy of
     // bytes.
     let mut packet: [u8; DATA_LENGTH] = [0; DATA_LENGTH];
+    echo.init_bytes(&mut packet);
     echo.final_bytes(&mut packet);
-
     // Weirdly, you have to clone the `cont` variabel here. If cloned inside the `FnMut`, the compiler shouts
 
     // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
@@ -339,11 +244,11 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     loop {
         let time = time::Instant::now();
+        stats.packet_sent += 1;
         socket.send(&packet)?;
         if let Err(_) = tx.send(RingMessage::Continue((echo.seq_num, time))) {
             return Err(RingError::ChannelSendError);
         };
-        stats.packet_sent = stats.packet_sent + 1;
         echo.final_bytes(&mut packet);
         let mut lock = lock.lock().unwrap();
         let res = cond
@@ -361,6 +266,9 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
         Err(_) => (0, 0, 0),
     };
     stats.packet_sent = stats.packet_sent - discard;
+    if sucsess > stats.packet_sent {
+        stats.packet_sent += 1;
+    }
     stats.loss = loss + (stats.packet_sent - sucsess);
     stats.successful = sucsess;
     println!("\n\x1b[1;32m------------Ring Stats------------\x1b[0m");
