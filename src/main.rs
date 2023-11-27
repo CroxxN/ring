@@ -11,7 +11,7 @@ use std::{env, net::ToSocketAddrs};
 mod iputils;
 
 const VERSION: &'static str = "0.1";
-pub(crate) const DATA: &[u8; 7] = b"SWIKISS";
+pub(crate) const DATA: &[u8; 7] = b"SWIKISS"; // sweetkiss
 pub(crate) const DATA_LENGTH: usize = 8 + DATA.len(); // fixed 8 bytes data field
 
 struct RingOptions {
@@ -23,8 +23,8 @@ struct RingOptions {
     addr: String,
 }
 
-#[derive(PartialEq)]
-enum IP {
+#[derive(PartialEq, Debug, Eq)]
+pub(crate) enum IP {
     V4,
     V6,
 }
@@ -177,12 +177,13 @@ fn main() -> Result<(), RingError> {
         m
     } else {
         eprintln!("Failed to parse command-line arguments");
-        return Ok(());
+        return Err(RingError::ArgError);
     };
 
     let ip = if matches.opt_present("4") {
         IP::V4
     } else {
+        dbg!("v6");
         IP::V6
     };
     let url = matches.free[0].clone();
@@ -199,25 +200,22 @@ fn main() -> Result<(), RingError> {
         addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
     } else {
         addr = iputils::ip6::get_ip6_addr(parsed_addr)?;
+        dbg!(addr);
     }
-    let octets = match addr.ip() {
-        std::net::IpAddr::V6(i) => Some(i.octets()),
-        _ => None,
-    };
     match socket.connect(&SockAddr::from(addr)) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Error: {e}");
+            return Err(RingError::NetworkError);
         }
     }
     println!(
      // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
-
      "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
-     url, addr, 14
+         url, addr, 14
      );
 
-    if let Err(e) = ring_impl::run(socket) {
+    if let Err(e) = ring_impl::run(socket, addr) {
         eprintln!("Error: {e}");
         return Ok(());
     };

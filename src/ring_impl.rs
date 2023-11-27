@@ -2,6 +2,7 @@ use crate::iputils::ip4::EchoICMPv4;
 use crate::{error::RingError, DATA_LENGTH};
 use ctrlc;
 use socket2::Socket;
+use std::net::SocketAddr;
 use std::{
     io::Read,
     sync::{
@@ -38,56 +39,10 @@ enum RingMessage {
     Stop,
 }
 
-// Maybe in subsequent versions, the function below will be a generic one to get either IPV4 or IPV6
-// Could make it by adding a type parameter `<IPVersion>` in the function description, and make it generic over
-// IP versions
-
-// The function could look like:
-
-// fn get_ip_socket<IPVersion>(url: &str) -> Result<SocketAddr, RingError>{}
-// where `IPVersion` is
-// enum IPVersion {
-//     IPV4,
-//     IPV6
-// }
-// Better yet, the whole function could be separated over the another module entirely
-// So, this function is curretly unstable, and may break over time
-// TODO: Make this function generic over both IP versions
-
-// fn calc_psuedo_checksum(bytes: &mut [u8]) -> u16 {
-//     let new_bytes: &mut [u8] = &mut [0];
-//     // new_bytes[0..4].copy_from_slice();
-//     let mut sum = 0u32;
-//     // Source Address
-//     new_bytes[0..12].copy_from_slice(unimplemented!());
-//     // Destination Address
-//     new_bytes[12..28].copy_from_slice(unimplemented!());
-//     // ICMPv6 length
-//     new_bytes[28..32].copy_from_slice(unreachable!());
-//     // zeros + next header
-//     new_bytes[32..36].copy_from_slice(unreachable!());
-//     // Actual ICMPv6 data
-//     new_bytes[36..].copy_from_slice(&bytes);
-//     for word in new_bytes.chunks(2) {
-//         let mut part = u16::from(word[0]) << 8;
-//         if word.len() > 1 {
-//             part += u16::from(word[1]);
-//         }
-//         sum = sum.wrapping_add(u32::from(part));
-//     }
-
-//     while (sum >> 16) > 0 {
-//         sum = (sum & 0xffff) + (sum >> 16);
-//     }
-
-//     let sum = !sum as u16;
-//     return sum;
-// }
-
 // Accepts a data buffer checks if the checksum is correct.
 // If not, some data has been corrupted
 // Making global as it can't be tied down to any struct
-fn check_checksum_g(bytes: &mut [u8]) -> bool {
+fn check_checksum(bytes: &mut [u8]) -> bool {
     // let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
     // let mut final_checksum = 0;
     let mut chck = 0u32;
@@ -151,7 +106,7 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
 
                         let ttl = buf[8];
                         let seq = (buf[len + 6] as u16) << 8 | (buf[len + 7] as u16);
-                        if !check_checksum_g(&mut buf[len..i]) {
+                        if !check_checksum(&mut buf[len..i]) {
                             rtx.1 = rtx.1 + 1;
                         } else {
                             println!(
@@ -182,7 +137,7 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
     return rtx;
 }
 
-pub fn run(socket: &Socket) -> Result<(), RingError> {
+pub fn run(socket: &Socket, dest: SocketAddr) -> Result<(), RingError> {
     let (tx, rx) = channel::<RingMessage>();
 
     let mut echo = EchoICMPv4::new();
@@ -201,8 +156,8 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
     // the std MPSC channel is not suitable for the task below.
     //Also, use Condvar?
     let cont = Arc::new(AtomicBool::new(true));
-    // let cont_recv = Arc::clone(&cont);
-    let cont_send = Arc::clone(&cont);
+    // Weirdly, you have to clone the `cont` variabel here. If cloned inside the `FnMut`, the compiler shouts
+    let cont_send = cont.clone();
 
     // Condvar! YAY!
     let pcond = Arc::new((Mutex::new(false), Condvar::new()));
@@ -215,9 +170,35 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
     // Use a mut array of u8, so increasing the `seq_num` doesn't require creating a whole new copy of
     // bytes.
     let mut packet: [u8; DATA_LENGTH] = [0; DATA_LENGTH];
-    echo.init_bytes(&mut packet);
-    echo.final_bytes(&mut packet);
-    // Weirdly, you have to clone the `cont` variabel here. If cloned inside the `FnMut`, the compiler shouts
+    if dest.is_ipv6() {
+        let pheader: &mut [u8; 40] = &mut [0; 40];
+        let dest = match dest.ip() {
+            std::net::IpAddr::V6(i) => i.octets(),
+            _ => {
+                eprintln!("[ERROR]: Failed to get remote socket address");
+                return Err(RingError::NetworkError);
+            }
+        };
+        let source = if let Ok(s) = socket.local_addr() {
+            if let Some(addr) = s.as_socket_ipv6() {
+                addr.ip().octets()
+            } else {
+                eprintln!("[ERROR]: Failed to get local socket address");
+                return Err(RingError::NetworkError);
+            }
+        } else {
+            eprintln!("[ERROR]: Failed to get local socket address");
+            return Err(RingError::NetworkError);
+        };
+        pheader[0..16].copy_from_slice(&dest[..]);
+        pheader[16..32].copy_from_slice(&source[..]);
+        pheader[32] = 16;
+        pheader[39] = 58;
+        echo.init_bytes_ip6(&mut packet, pheader);
+    } else {
+        echo.init_bytes(&mut packet);
+    }
+    echo.update_bytes(&mut packet);
 
     // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
     // determine when to stop running the loop
@@ -244,12 +225,12 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
 
     loop {
         let time = time::Instant::now();
-        stats.packet_sent += 1;
         socket.send(&packet)?;
         if let Err(_) = tx.send(RingMessage::Continue((echo.seq_num, time))) {
             return Err(RingError::ChannelSendError);
         };
-        echo.final_bytes(&mut packet);
+        stats.packet_sent += 1;
+        echo.update_bytes(&mut packet);
         let mut lock = lock.lock().unwrap();
         let res = cond
             .wait_timeout(lock, time::Duration::from_secs(1))
@@ -261,16 +242,19 @@ pub fn run(socket: &Socket) -> Result<(), RingError> {
         }
     }
     // Add code here to give the diagnostics result of all the times Pinged.
-    let (sucsess, loss, discard) = match handle.join() {
+    let (success, loss, discard) = match handle.join() {
         Ok((s, l, d)) => (s, l, d),
         Err(_) => (0, 0, 0),
     };
     stats.packet_sent = stats.packet_sent - discard;
-    if sucsess > stats.packet_sent {
+    if success > stats.packet_sent {
         stats.packet_sent += 1;
     }
-    stats.loss = loss + (stats.packet_sent - sucsess);
-    stats.successful = sucsess;
+    stats.loss = loss + (stats.packet_sent - success);
+    if stats.loss > stats.packet_sent {
+        stats.packet_sent = stats.loss;
+    }
+    stats.successful = success;
     println!("\n\x1b[1;32m------------Ring Stats------------\x1b[0m");
     println!(
         "\n\x1b[1;32mRinged!\x1b[0m Received \x1b[1;32m{} packets\x1b[0m of  \x1b[1;32m{} total packets,\x1b[0m with \x1b[1;31m{}% loss!\x1b[0m Pinged for \x1b[1;32m{} seconds\x1b[0m.",

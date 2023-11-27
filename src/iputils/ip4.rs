@@ -25,6 +25,8 @@ pub fn get_ip4_addr(mut socket: IntoIter<SocketAddr>) -> Result<SocketAddr, Ring
     }
 }
 
+// fn psuedo_check(pheader: &[u8]) -> u32 {}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct EchoICMPv4<'a> {
     pub echo_type: u8,
@@ -38,7 +40,7 @@ pub struct EchoICMPv4<'a> {
 impl<'a> Default for EchoICMPv4<'a> {
     fn default() -> Self {
         Self {
-            echo_type: 8,
+            echo_type: 128,
             code: 0,
             identifier: [0; 2],
             seq_num: 0,
@@ -54,12 +56,7 @@ impl<'b> EchoICMPv4<'b> {
     }
     // Change this function to accept a bool to indicate where it should return the checksum or not
     // fn calc_checksum(&mut self, bytes: &mut [u8; 14], some: bool ) -> Option<[u8; 2]>
-    #[inline]
     pub fn update_chksm(&mut self, bytes: &mut [u8]) {
-        // let local_adr = self.
-        // let psuedo_bytes: &mut [u8] = &mut [0];
-        // psuedo_bytes.copy_from_slice(bytes);
-        // calc_checksum_g(self.base_chcksm, bytes, None);
         bytes[2] = 0;
         bytes[3] = 0;
         let mut sum = self.base_chcksm as u32;
@@ -77,7 +74,8 @@ impl<'b> EchoICMPv4<'b> {
         bytes[2] = (sum >> 8) as u8;
         bytes[3] = (sum & 0xff) as u8;
     }
-    fn calc_checksum(&mut self, bytes: &mut [u8]) {
+
+    fn calc_checksum(&mut self, bytes: &[u8]) -> u32 {
         let mut chck = 0u32;
         for word in bytes.chunks(2) {
             let mut part = u16::from(word[0]) << 8;
@@ -86,13 +84,7 @@ impl<'b> EchoICMPv4<'b> {
             }
             chck = chck.wrapping_add(u32::from(part));
         }
-
-        while (chck >> 16) > 0 {
-            chck = (chck & 0xffff) + (chck >> 16);
-        }
-
-        bytes[2] = (chck >> 8) as u8;
-        bytes[3] = (chck & 0xff) as u8;
+        chck
     }
     pub fn increase_seq(&mut self) {
         self.seq_num += 1;
@@ -100,22 +92,29 @@ impl<'b> EchoICMPv4<'b> {
 
     // initialize ipv4 bytes
     pub fn init_bytes(&mut self, container: &mut [u8]) {
+        dbg!((container[2] as u16) << 8 | container[3] as u16);
         container[0] = self.echo_type;
         container[1] = self.code;
-        // It's already zero, but still make sure
-        container[2] = 0;
-        container[3] = 0;
-
         container[4] = self.identifier[0];
         container[5] = self.identifier[1];
         container[8..].copy_from_slice(&self.echo_data[0..7]);
-        self.calc_checksum(container);
-        let temp = (((container[2] as u16) << 8) | (container[3] as u16 & 0x00FF)) as u32;
-        // self.base_chcksm = temp.wrapping_add(0);
-        self.base_chcksm = temp;
+        self.base_chcksm = self.calc_checksum(container);
+        dbg!(self.base_chcksm);
     }
+    pub fn init_bytes_ip6(&mut self, container: &mut [u8], pheader: &[u8]) {
+        let temp = self.calc_checksum(pheader);
+        dbg!(temp);
+        // adding the psuedo-header checksum so it gets calculated at the same time
+        container[2] = (temp >> 8) as u8;
+        container[3] = (temp & 0xff) as u8;
 
-    pub fn final_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
+        dbg!((container[2] as u16) << 8 | container[3] as u16);
+        self.init_bytes(container);
+        container[2] = 0;
+        container[3] = 0;
+        // TO remove?
+    }
+    pub fn update_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
         self.increase_seq();
         final_bytes[6] = (self.seq_num >> 8) as u8;
         final_bytes[7] = (self.seq_num & 0x00FF) as u8;
