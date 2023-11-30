@@ -3,6 +3,7 @@
 - [RFC 792](https://datatracker.ietf.org/doc/html/rfc792)
 - [RFC 777](https://datatracker.ietf.org/doc/html/rfc777)
 - [RFC 4443](https://www.rfc-editor.org/rfc/rfc4443)
+- [RFC 3542](https://datatracker.ietf.org/doc/html/rfc3542)
 - [ICMP WIKI](https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol)
 - [ICMPv6 WIKI](https://en.wikipedia.org/wiki/ICMPv6)
 
