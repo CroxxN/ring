@@ -11,7 +11,7 @@ use std::{env, net::ToSocketAddrs};
 mod iputils;
 
 const VERSION: &'static str = "0.1";
-pub(crate) const DATA: &[u8; 7] = b"SWIKISS"; // sweetkiss
+pub(crate) const DATA: &[u8; 21] = b"SWIKISSSWIKISSSWIKISS"; // sweetkiss
 pub(crate) const DATA_LENGTH: usize = 8 + DATA.len(); // fixed 8 bytes data field
 
 struct RingOptions {
@@ -180,6 +180,13 @@ fn main() -> Result<(), RingError> {
         return Err(RingError::ArgError);
     };
 
+    let opt = if let Some(opt) = cli_actions(&args[0], matches.clone()) {
+        opt
+    } else {
+        eprintln!("\x1b[1;31mError: Missing Url\x1b[0");
+        return Ok(());
+    };
+
     let ip = if matches.opt_present("4") {
         Some(IP::V4)
     } else if matches.opt_present("6") {
@@ -188,45 +195,50 @@ fn main() -> Result<(), RingError> {
         None
     };
 
-    let url = matches.free[0].clone();
-    let opt = if let Some(opt) = cli_actions(&args[0], matches) {
-        opt
+    let url = if matches.free.is_empty() {
+        eprintln!("Error: No url supplied");
+        return Err(RingError::ArgError);
     } else {
-        eprintln!("\x1b[1;31mError: Missing Url\x1b[0");
-        return Ok(());
+        matches.free[0].clone()
     };
-    let socket = opt.get_socket();
-    let mut parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
+    let mut socket = opt.get_socket().try_clone()?;
+    let parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
     let mut addr;
     if let Some(i) = ip {
         if i == IP::V4 {
-            addr = iputils::get_ip4_addr(&mut parsed_addr)?;
+            addr = iputils::get_ip4_addr(parsed_addr.to_owned())?;
         } else {
-            addr = iputils::get_ip6_addr(&mut parsed_addr)?;
+            addr = iputils::get_ip6_addr(parsed_addr.to_owned())?;
         }
+        socket.connect(&SockAddr::from(addr))?;
     } else {
-        addr = match iputils::get_ip6_addr(&mut parsed_addr) {
+        addr = match iputils::get_ip6_addr(parsed_addr.to_owned()) {
             Ok(ip) => ip,
-            Err(_) => iputils::get_ip4_addr(&mut parsed_addr)?,
+            Err(_) => {
+                let ip4 = iputils::get_ip4_addr(parsed_addr.to_owned())?;
+
+                socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))?;
+                ip4
+            }
         };
-    }
-    match socket.connect(&SockAddr::from(addr)) {
-        Ok(_) => {}
-        Err(e) => {
-            // if one fails, try everything.
-            if addr.is_ipv6() {
-                addr = iputils::get_ip4_addr(&mut parsed_addr)?;
-                socket.connect(&SockAddr::from(addr))?;
-            } else {
-                addr = iputils::get_ip6_addr(&mut parsed_addr)?;
-                socket.connect(&SockAddr::from(addr))?;
+        match socket.connect(&SockAddr::from(addr.clone())) {
+            Ok(_) => {}
+            Err(e) => {
+                // if one fails, try everything.
+                if addr.is_ipv6() {
+                    addr = iputils::get_ip4_addr(parsed_addr.clone())?;
+                    socket.connect(&SockAddr::from(addr))?;
+                } else {
+                    addr = iputils::get_ip6_addr(parsed_addr.clone())?;
+                    socket.connect(&SockAddr::from(addr))?;
+                }
             }
         }
     }
     println!(
      // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
      "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
-         url, addr, DATA_LENGTH
+         url, addr, DATA.len()
      );
 
     if let Err(e) = ring_impl::run(socket, addr) {

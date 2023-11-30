@@ -117,7 +117,7 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                             rtx.1 = rtx.1 + 1;
                         } else {
                             println!(
-                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", i, seq, ttl, time
+                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", i-8, seq, ttl, time
                             );
                             rtx.0 = rtx.0 + 1;
                         }
@@ -144,7 +144,7 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
     return rtx;
 }
 
-pub fn run(socket: &Socket, dest: SocketAddr) -> Result<(), RingError> {
+pub fn run(socket: Socket, dest: SocketAddr) -> Result<(), RingError> {
     let (tx, rx) = channel::<RingMessage>();
 
     let mut echo = EchoICMP::new();
@@ -227,6 +227,9 @@ pub fn run(socket: &Socket, dest: SocketAddr) -> Result<(), RingError> {
         Ok((s, l, d)) => (s, l, d),
         Err(_) => (0, 0, 0),
     };
+    if stats.packet_sent == 0 {
+        stats.packet_sent = 1;
+    }
     stats.packet_sent = stats.packet_sent - discard;
     if success > stats.packet_sent {
         stats.packet_sent += 1;

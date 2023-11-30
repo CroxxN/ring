@@ -5,7 +5,7 @@ use std::vec::IntoIter;
 use crate::RingError;
 use crate::DATA;
 
-pub fn get_ip4_addr(socket: &mut IntoIter<SocketAddr>) -> Result<SocketAddr, RingError> {
+pub fn get_ip4_addr(mut socket: IntoIter<SocketAddr>) -> Result<SocketAddr, RingError> {
     let ipv4addr = socket.try_for_each(|addr| {
         if addr.is_ipv4() {
             if let std::net::IpAddr::V4(ip) = addr.ip() {
@@ -25,9 +25,9 @@ pub fn get_ip4_addr(socket: &mut IntoIter<SocketAddr>) -> Result<SocketAddr, Rin
     }
 }
 
-pub fn get_ip6_addr(socket: &mut IntoIter<SocketAddr>) -> Result<SocketAddr, RingError> {
+pub fn get_ip6_addr(socket: IntoIter<SocketAddr>) -> Result<SocketAddr, RingError> {
     // Very hacky
-    let ipv6addr = socket.try_for_each(|addr| {
+    let ipv6addr = socket.clone().try_for_each(|addr| {
         if addr.is_ipv6() {
             if let std::net::IpAddr::V6(ip) = addr.ip() {
                 if ip.is_loopback() {
@@ -54,7 +54,7 @@ pub struct EchoICMP<'a> {
     pub identifier: [u8; 2],
     pub seq_num: u16,
     pub base_chcksm: u32,
-    pub echo_data: &'a [u8; 7],
+    pub echo_data: &'a [u8; 21],
 }
 
 impl<'a> Default for EchoICMP<'a> {
@@ -126,7 +126,7 @@ impl<'b> EchoICMP<'b> {
         container[1] = self.code;
         container[4] = self.identifier[0];
         container[5] = self.identifier[1];
-        container[8..].copy_from_slice(&self.echo_data[0..7]);
+        container[8..].copy_from_slice(&self.echo_data[0..21]);
         self.base_chcksm = self.calc_checksum(container);
     }
     pub fn update_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
