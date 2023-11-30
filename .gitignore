@@ -1,4 +1,5 @@
 /target
 /orig_ping
+src/ring_impl.rs.bak
 ring
 run

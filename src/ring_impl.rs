@@ -1,4 +1,4 @@
-use crate::iputils::ip4::EchoICMPv4;
+use crate::iputils::EchoICMP;
 use crate::{error::RingError, DATA_LENGTH};
 use ctrlc;
 use socket2::Socket;
@@ -43,9 +43,8 @@ enum RingMessage {
 // If not, some data has been corrupted
 // Making global as it can't be tied down to any struct
 fn check_checksum(bytes: &mut [u8]) -> bool {
-    // let init_checksum = ((bytes[2] as u16) << 8) | (bytes[3] as u16);
     // let mut final_checksum = 0;
-    let mut chck = 0u32;
+    let mut chck = 0_u32;
     for word in bytes.chunks(2) {
         let mut part = u16::from(word[0]) << 8;
         if word.len() > 1 {
@@ -97,20 +96,28 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                         let time = instant.elapsed().as_millis();
                         // If Ctrl + C is already pressed, but there is still data on the buffer,
                         // we currently discard it.
-                        let len = ((buf[0] & 0x0F) << 2) as usize; // wtf?
-                                                                   // If the packet isn't ICMP echo reply, discard it.
-                        if buf[len] != 0 {
+
+                        // Extracting ip header length.
+                        // When using raw sockets, we get ip header + icmp packet.
+                        // the first octet of the entire packet(ip header + icmp packet) is divided into two sections.
+                        // The first 4 bits of the first octet is the ip version(in ipv4's case 0100), and the low 4 bits
+                        // is the length of the ip header. here we grab the low 4 bits from the first octet(by masking with 0x0f)
+                        // and then multiply by 4 (<< 2) to convert bytes to bits
+                        // only required when using icmpv4 raw packets. isn't needed in dgram and icmpv6 packets.
+                        // let len = ((buf[0] & 0x0F) << 2) as usize; // wtf?
+                        // If the packet isn't ICMP echo reply, discard it.
+                        if !(buf[0] == 129 || buf[0] == 0) {
                             rtx.2 = rtx.2 + 1;
                             continue;
                         }
 
                         let ttl = buf[8];
-                        let seq = (buf[len + 6] as u16) << 8 | (buf[len + 7] as u16);
-                        if !check_checksum(&mut buf[len..i]) {
+                        let seq = (buf[6] as u16) << 8 | (buf[7] as u16);
+                        if buf[0] == 0 && !check_checksum(&mut buf[..i]) {
                             rtx.1 = rtx.1 + 1;
                         } else {
                             println!(
-                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", (i - len), seq, ttl, time
+                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", i, seq, ttl, time
                             );
                             rtx.0 = rtx.0 + 1;
                         }
@@ -140,16 +147,7 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
 pub fn run(socket: &Socket, dest: SocketAddr) -> Result<(), RingError> {
     let (tx, rx) = channel::<RingMessage>();
 
-    let mut echo = EchoICMPv4::new();
-    // let address = socket.local_addr()?.as_socket_ipv6().unwrap().ip().octets();
-
-    // let ip_as_string;
-    // if let Some(addr) = address {
-    //     ip_as_string = addr.to_string();
-    // } else {
-    //     return Ok(());
-    // }
-    // echo.source = ip_as_string.as_bytes().try_into().unwrap();
+    let mut echo = EchoICMP::new();
 
     // TEST: change
     // This bit seems extremely hacky. I don't want to introduce new dependency for MPMC channel, as
@@ -165,45 +163,25 @@ pub fn run(socket: &Socket, dest: SocketAddr) -> Result<(), RingError> {
 
     let recv_socket = socket.try_clone()?;
     socket.set_nonblocking(true)?; // IMPORTANT
-    let handle = thread::spawn(move || handle_returned(rx, recv_socket));
 
     // Use a mut array of u8, so increasing the `seq_num` doesn't require creating a whole new copy of
     // bytes.
     let mut packet: [u8; DATA_LENGTH] = [0; DATA_LENGTH];
-    if dest.is_ipv6() {
-        let pheader: &mut [u8; 40] = &mut [0; 40];
-        let dest = match dest.ip() {
-            std::net::IpAddr::V6(i) => i.octets(),
-            _ => {
-                eprintln!("[ERROR]: Failed to get remote socket address");
-                return Err(RingError::NetworkError);
-            }
-        };
-        let source = if let Ok(s) = socket.local_addr() {
-            if let Some(addr) = s.as_socket_ipv6() {
-                addr.ip().octets()
-            } else {
-                eprintln!("[ERROR]: Failed to get local socket address");
-                return Err(RingError::NetworkError);
-            }
-        } else {
-            eprintln!("[ERROR]: Failed to get local socket address");
-            return Err(RingError::NetworkError);
-        };
-        pheader[0..16].copy_from_slice(&dest[..]);
-        pheader[16..32].copy_from_slice(&source[..]);
-        pheader[32] = 16;
-        pheader[39] = 58;
-        echo.init_bytes_ip6(&mut packet, pheader);
+    let ip = if !dest.is_ipv6() {
+        echo = EchoICMP::new_v4();
+        4u8
     } else {
-        echo.init_bytes(&mut packet);
-    }
+        6u8
+    };
+    echo.init_bytes(&mut packet);
+    echo.increase_seq(&mut packet);
+    // seq 1
     echo.update_bytes(&mut packet);
-
-    // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
-    // determine when to stop running the loop
+    let handle = thread::spawn(move || handle_returned(rx, recv_socket));
 
     let tx_clone = tx.clone();
+    // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
+    // determine when to stop running the loop
     ctrlc::set_handler(move || {
         cont_send.store(false, std::sync::atomic::Ordering::Relaxed);
         let (lock, cond) = &*scond;
@@ -230,7 +208,10 @@ pub fn run(socket: &Socket, dest: SocketAddr) -> Result<(), RingError> {
             return Err(RingError::ChannelSendError);
         };
         stats.packet_sent += 1;
-        echo.update_bytes(&mut packet);
+        echo.increase_seq(&mut packet);
+        if ip == 4 {
+            echo.update_bytes(&mut packet);
+        }
         let mut lock = lock.lock().unwrap();
         let res = cond
             .wait_timeout(lock, time::Duration::from_secs(1))

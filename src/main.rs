@@ -44,19 +44,19 @@ impl RingOptions {
         Ok(Self {
             // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
             // socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
-            socket: Socket::new(Domain::IPV6, Type::RAW, Some(Protocol::ICMPV6))?,
+            socket: Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::ICMPV6))?,
             count: 0,
             ip: IP::V6,
-            ttl: 64,
+            ttl: 128,
             quite: false,
             addr: String::new(),
         })
     }
     fn new_ip4() -> Result<Self, RingError> {
         Ok(Self {
-            socket: Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?,
+            socket: Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))?,
             count: 0,
-            ip: IP::V6,
+            ip: IP::V4,
             ttl: 64,
             quite: false,
             addr: String::new(),
@@ -181,11 +181,13 @@ fn main() -> Result<(), RingError> {
     };
 
     let ip = if matches.opt_present("4") {
-        IP::V4
+        Some(IP::V4)
+    } else if matches.opt_present("6") {
+        Some(IP::V6)
     } else {
-        dbg!("v6");
-        IP::V6
+        None
     };
+
     let url = matches.free[0].clone();
     let opt = if let Some(opt) = cli_actions(&args[0], matches) {
         opt
@@ -194,25 +196,37 @@ fn main() -> Result<(), RingError> {
         return Ok(());
     };
     let socket = opt.get_socket();
-    let parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
-    let addr;
-    if ip == IP::V4 {
-        addr = iputils::ip4::get_ip4_addr(parsed_addr)?;
+    let mut parsed_addr = (opt.addr.as_str(), 0).to_socket_addrs().unwrap();
+    let mut addr;
+    if let Some(i) = ip {
+        if i == IP::V4 {
+            addr = iputils::get_ip4_addr(&mut parsed_addr)?;
+        } else {
+            addr = iputils::get_ip6_addr(&mut parsed_addr)?;
+        }
     } else {
-        addr = iputils::ip6::get_ip6_addr(parsed_addr)?;
-        dbg!(addr);
+        addr = match iputils::get_ip6_addr(&mut parsed_addr) {
+            Ok(ip) => ip,
+            Err(_) => iputils::get_ip4_addr(&mut parsed_addr)?,
+        };
     }
     match socket.connect(&SockAddr::from(addr)) {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("Error: {e}");
-            return Err(RingError::NetworkError);
+            // if one fails, try everything.
+            if addr.is_ipv6() {
+                addr = iputils::get_ip4_addr(&mut parsed_addr)?;
+                socket.connect(&SockAddr::from(addr))?;
+            } else {
+                addr = iputils::get_ip6_addr(&mut parsed_addr)?;
+                socket.connect(&SockAddr::from(addr))?;
+            }
         }
     }
     println!(
      // Terminal Color(VT100) Specification form (https://chrisyeh96.github.io/2020/03/28/terminal-colors.html)
      "\n\x1b[1;32mRinging \x1b[0m\x1b[4;34m{}({})\x1b[0m \x1b[1;32mwith \x1b[1;37m{} bytes\x1b[0m\x1b[1;32m of data\x1b[0m\n",
-         url, addr, 14
+         url, addr, DATA_LENGTH
      );
 
     if let Err(e) = ring_impl::run(socket, addr) {
