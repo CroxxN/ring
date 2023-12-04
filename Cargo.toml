@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 getopts = "0.2.13"
-socket2 = {version="0.5.3", features=["all"]}
+socket2 = {version="0.5.5", features=["all"]}
 ctrlc = "3.4.0"

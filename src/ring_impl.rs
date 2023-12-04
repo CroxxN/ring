@@ -1,4 +1,5 @@
 use crate::iputils::EchoICMP;
+use crate::RingOptions;
 use crate::{error::RingError, DATA_LENGTH};
 use ctrlc;
 use socket2::Socket;
@@ -61,7 +62,11 @@ fn check_checksum(bytes: &mut [u8]) -> bool {
     chck == 0
 }
 
-fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> (u32, u32, u32) {
+fn handle_returned(
+    rx: mpsc::Receiver<RingMessage>,
+    mut recv_socket: Socket,
+    opts: &RingOptions,
+) -> (u32, u32, u32) {
     let mut rtx = (0u32, 0u32, 0u32);
     let mut buf = [0; 64];
     'outer: loop {
@@ -74,7 +79,9 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                     // Can't help spining
                     // while there is no data on the buffer, and 1s has not elapsed,
                     // keep spinning. Also keep checking if we receive SIGINT.
-                    while i.elapsed().as_millis() < 1000 && recv_socket.peek_sender().is_err() {
+                    while i.elapsed().as_millis() < opts.timeout
+                        && recv_socket.peek_sender().is_err()
+                    {
                         // If the user presses CTRL + C while we're waiting for a reply, exit every thing
                         if rx.try_recv().is_ok_and(|v| v == RingMessage::Stop) {
                             break 'outer;
@@ -116,9 +123,12 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
                         if buf[0] == 0 && !check_checksum(&mut buf[..i]) {
                             rtx.1 = rtx.1 + 1;
                         } else {
-                            println!(
+                            if !opts.quite {
+                                // TODO: fix ttl
+                                println!(
                         "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", i-8, seq, ttl, time
                             );
+                            }
                             rtx.0 = rtx.0 + 1;
                         }
                     }
@@ -144,7 +154,8 @@ fn handle_returned(rx: mpsc::Receiver<RingMessage>, mut recv_socket: Socket) -> 
     return rtx;
 }
 
-pub fn run(socket: Socket, dest: SocketAddr) -> Result<(), RingError> {
+pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
+    let socket = opts.socket.try_clone()?;
     let (tx, rx) = channel::<RingMessage>();
 
     let mut echo = EchoICMP::new();
@@ -173,11 +184,12 @@ pub fn run(socket: Socket, dest: SocketAddr) -> Result<(), RingError> {
     } else {
         6u8
     };
+    let interval = opts.interval;
     echo.init_bytes(&mut packet);
     echo.increase_seq(&mut packet);
     // seq 1
     echo.update_bytes(&mut packet);
-    let handle = thread::spawn(move || handle_returned(rx, recv_socket));
+    let handle = thread::spawn(move || handle_returned(rx, recv_socket, &opts));
 
     let tx_clone = tx.clone();
     // The ctrlc crate takes a FnMut as an argument. We use Arc to store and load a boolen value to
@@ -214,7 +226,7 @@ pub fn run(socket: Socket, dest: SocketAddr) -> Result<(), RingError> {
         }
         let mut lock = lock.lock().unwrap();
         let res = cond
-            .wait_timeout(lock, time::Duration::from_secs(1))
+            .wait_timeout(lock, time::Duration::from_secs(interval))
             .unwrap();
         lock = res.0;
         if *lock {
