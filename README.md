@@ -18,6 +18,7 @@ colors too.
 
 ## Options
 
+```zsh
 -h, --help        Print this help message
 -v, --version     Print current version
 -4, --ipv4        Ring IPV4 host
@@ -28,6 +29,7 @@ colors too.
 -d, --timeout     Wait atmost <n> seconds for echo replies
 -q, --quiet       Don't print intermediate ring results
 -t, --ttl         Set time-to-live value
+```
 
 ## TODO
 
