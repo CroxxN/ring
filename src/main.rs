@@ -1,7 +1,3 @@
-// TODO: Remove these ignored warnings
-#![allow(unused_variables)]
-#![allow(dead_code)]
-
 mod error;
 mod ring_impl;
 use error::RingError;
@@ -11,8 +7,7 @@ use std::{env, net::ToSocketAddrs};
 mod iputils;
 
 // TODO: Build the help message, with colors too
-const HELP_LONG: &'static str =
-    "\x1b[1;32mUsage:\x1b[0m ring \x1b[1;33m[options]\x1b[0m <destination>
+const HELP_LONG: &str = "
 
 \x1b[1;32mSend ICMP Echo Request to hosts\x1b[0m
 
@@ -36,7 +31,7 @@ See ring(1).";
 // -a, --adaptive    Adaptive ring [comming soon]
 // -f, --flood       Flood ring [comming soon]
 
-const VERSION: &'static str = "0.2";
+const VERSION: &str = "0.2";
 
 pub(crate) const DATA: &[u8; 21] = b"SWIKISSSWIKISSSWIKISS"; // sweetkiss
 pub(crate) const DATA_LENGTH: usize = 8 + DATA.len(); // fixed 8 bytes data field
@@ -44,7 +39,6 @@ pub(crate) const DATA_LENGTH: usize = 8 + DATA.len(); // fixed 8 bytes data fiel
 struct RingOptions {
     socket: Socket,
     count: u32,
-    ip: IP,
     ttl: u32,
     interval: u64,
     timeout: u128,
@@ -74,7 +68,6 @@ impl RingOptions {
         Ok(Self {
             socket: Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::ICMPV6))?,
             count: 0,
-            ip: IP::V6,
             ttl: 128,
             interval: 1,
             timeout: 1000,
@@ -87,7 +80,6 @@ impl RingOptions {
         Ok(Self {
             socket: Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))?,
             count: 0,
-            ip: IP::V4,
             ttl: 128,
             interval: 1,
             timeout: 1000,
@@ -98,9 +90,6 @@ impl RingOptions {
     }
     fn set_count(&mut self, count: u32) {
         self.count = count;
-    }
-    fn set_ip(&mut self, ip: &str) {
-        self.ip = IP::from(ip);
     }
     fn set_ttl(&mut self, ttl: u32) -> Result<(), RingError> {
         self.socket.set_ttl(ttl)?;
@@ -118,16 +107,16 @@ impl RingOptions {
         }
         Ok(())
     }
-    fn get_socket(&self) -> &Socket {
-        &self.socket
-    }
 }
 // TODO: Add more cli options like choosing between IP modes
 // and number of pings
 
 // Utility to print the help screen
 fn print_help(pname: &str) {
-    // println!("{}: Usage\n", pname);
+    println!(
+        "\x1b[1;32mUsage:\x1b[0m {} \x1b[1;33m[options]\x1b[0m <destination>",
+        pname
+    );
     println!("{}", HELP_LONG);
 }
 
@@ -268,9 +257,9 @@ fn main() -> Result<(), RingError> {
                 ip4
             }
         };
-        match opt.socket.connect(&SockAddr::from(addr.clone())) {
+        match opt.socket.connect(&SockAddr::from(addr)) {
             Ok(_) => {}
-            Err(e) => {
+            Err(_) => {
                 // if one fails, try everything.
                 if addr.is_ipv6() {
                     addr = iputils::get_ip4_addr(parsed_addr.clone())?;

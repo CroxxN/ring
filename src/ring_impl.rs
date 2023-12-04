@@ -1,7 +1,7 @@
 use crate::iputils::EchoICMP;
 use crate::RingOptions;
 use crate::{error::RingError, DATA_LENGTH};
-use ctrlc;
+
 use socket2::Socket;
 use std::net::SocketAddr;
 use std::{
@@ -114,14 +114,14 @@ fn handle_returned(
                         // let len = ((buf[0] & 0x0F) << 2) as usize; // wtf?
                         // If the packet isn't ICMP echo reply, discard it.
                         if !(buf[0] == 129 || buf[0] == 0) {
-                            rtx.2 = rtx.2 + 1;
+                            rtx.2 += 1;
                             continue;
                         }
 
                         let ttl = buf[8];
                         let seq = (buf[6] as u16) << 8 | (buf[7] as u16);
                         if buf[0] == 0 && !check_checksum(&mut buf[..i]) {
-                            rtx.1 = rtx.1 + 1;
+                            rtx.1 += 1;
                         } else {
                             if !opts.quite {
                                 // TODO: fix ttl
@@ -129,7 +129,7 @@ fn handle_returned(
                         "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", i-8, seq, ttl, time
                             );
                             }
-                            rtx.0 = rtx.0 + 1;
+                            rtx.0 += 1;
                         }
                     }
                     Err(_e) => {
@@ -151,7 +151,7 @@ fn handle_returned(
             }
         }
     }
-    return rtx;
+    rtx
 }
 
 pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
@@ -216,7 +216,7 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
     loop {
         let time = time::Instant::now();
         socket.send(&packet)?;
-        if let Err(_) = tx.send(RingMessage::Continue((echo.seq_num, time))) {
+        if tx.send(RingMessage::Continue((echo.seq_num, time))).is_err() {
             return Err(RingError::ChannelSendError);
         };
         stats.packet_sent += 1;
@@ -242,7 +242,7 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
     if stats.packet_sent == 0 {
         stats.packet_sent = 1;
     }
-    stats.packet_sent = stats.packet_sent - discard;
+    stats.packet_sent -= discard;
     if success > stats.packet_sent {
         stats.packet_sent += 1;
     }
@@ -256,7 +256,7 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
         "\n\x1b[1;32mRinged!\x1b[0m Received \x1b[1;32m{} packets\x1b[0m of  \x1b[1;32m{} total packets,\x1b[0m with \x1b[1;31m{}% loss!\x1b[0m Pinged for \x1b[1;32m{} seconds\x1b[0m.",
         stats.successful,
         stats.packet_sent,
-        ((stats.loss * 100) / stats.packet_sent as u32),
+        ((stats.loss * 100) / stats.packet_sent),
         stats.time.elapsed().as_secs()
     );
 

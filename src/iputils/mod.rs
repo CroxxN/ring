@@ -84,7 +84,7 @@ impl<'b> EchoICMP<'b> {
     pub fn update_chksm(&mut self, bytes: &mut [u8]) {
         bytes[2] = 0;
         bytes[3] = 0;
-        let mut sum = self.base_chcksm as u32;
+        let mut sum = self.base_chcksm;
         // for word in bytes.chunks(2) {
         let mut part = u16::from(bytes[6]) << 8;
         part += u16::from(bytes[7]);
@@ -129,7 +129,7 @@ impl<'b> EchoICMP<'b> {
         container[8..].copy_from_slice(&self.echo_data[0..21]);
         self.base_chcksm = self.calc_checksum(container);
     }
-    pub fn update_bytes<'a>(&mut self, final_bytes: &mut [u8]) {
+    pub fn update_bytes(&mut self, final_bytes: &mut [u8]) {
         self.update_chksm(final_bytes);
     }
 }
