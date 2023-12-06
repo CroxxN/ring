@@ -10,7 +10,7 @@ pub fn get_ip4_addr(mut socket: IntoIter<SocketAddr>) -> Result<SocketAddr, Ring
         if addr.is_ipv4() {
             if let std::net::IpAddr::V4(ip) = addr.ip() {
                 if ip.is_loopback() {
-                    println!("\n\x1b[1;33m[WARNING]: Ringing a loopback address\x1b[0m\n");
+                    println!("\n\x1b[1;33m[WARNING]: Ringing a loopback address\x1b[0m");
                 }
             }
             return ControlFlow::Break(addr);
@@ -31,7 +31,7 @@ pub fn get_ip6_addr(socket: IntoIter<SocketAddr>) -> Result<SocketAddr, RingErro
         if addr.is_ipv6() {
             if let std::net::IpAddr::V6(ip) = addr.ip() {
                 if ip.is_loopback() {
-                    println!("\n\x1b[1;33m[WARNING]: Ringing a loopback address\x1b[0m\n");
+                    println!("\n\x1b[1;33m[WARNING]: Ringing a loopback address\x1b[0m");
                 }
             }
             return ControlFlow::Break(addr);

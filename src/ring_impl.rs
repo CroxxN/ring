@@ -62,6 +62,67 @@ fn check_checksum(bytes: &mut [u8]) -> bool {
     chck == 0
 }
 
+// parse ICMP error messages. See rfc 792
+fn parse_error(mtype: u8, code: u8, seq: u16) {
+    match mtype {
+        3 => match code {
+            0 => println!(
+                "\x1b[1;31mDestination Network Unreachable. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            1 => println!(
+                "\x1b[1;31mDestination Host Unreachable. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            2 => println!(
+                "\x1b[1;31mDestination Protocol Unreachable. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            3 => println!(
+                "\x1b[1;31mDestination Port Unreachable. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            4 => println!(
+                "\x1b[1;31mFragmentation Needed. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            5 => println!(
+                "\x1b[1;31mSource Route Failed. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            _ => (),
+        },
+        4 => {
+            if code == 0 {
+                println!(
+                    "\x1b[1;31mSource Quench. ICMP Sequence Packet: {}\x1b[0m",
+                    seq
+                )
+            }
+        }
+        11 => match code {
+            0 => println!(
+                "\x1b[1;31mTime to Live Exceeded. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            1 => println!(
+                "\x1b[1;31mFragementation limit Exceeded. ICMP Sequence Packet: {}\x1b[0m",
+                seq
+            ),
+            _ => (),
+        },
+        12 => {
+            if code == 0 {
+                println!(
+                    "\x1b[1;31mParameter Problem. ICMP Sequence Packet: {}\x1b[0m",
+                    seq
+                )
+            }
+        }
+        _ => (),
+    }
+}
+
 fn handle_returned(
     rx: mpsc::Receiver<RingMessage>,
     mut recv_socket: Socket,
@@ -114,6 +175,10 @@ fn handle_returned(
                         // let len = ((buf[0] & 0x0F) << 2) as usize; // wtf?
                         // If the packet isn't ICMP echo reply, discard it.
                         if !(buf[0] == 129 || buf[0] == 0) {
+                            // parse_error(buf[0], buf[1]); // (code, type)
+                            if let RingMessage::Continue((seq, _)) = m {
+                                parse_error(buf[0], buf[1], seq);
+                            }
                             rtx.2 += 1;
                             continue;
                         }
@@ -216,7 +281,10 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
     loop {
         let time = time::Instant::now();
         socket.send(&packet)?;
-        if tx.send(RingMessage::Continue((echo.seq_num, time))).is_err() {
+        if tx
+            .send(RingMessage::Continue((echo.seq_num, time)))
+            .is_err()
+        {
             return Err(RingError::ChannelSendError);
         };
         stats.packet_sent += 1;
