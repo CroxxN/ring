@@ -250,6 +250,8 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
         6u8
     };
     let interval = opts.interval;
+    let mut loop_time = opts.count as i64;
+
     echo.init_bytes(&mut packet);
     echo.increase_seq(&mut packet);
     // seq 1
@@ -279,6 +281,7 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
     let (lock, cond) = &*pcond;
 
     loop {
+        loop_time -= 1;
         let time = time::Instant::now();
         socket.send(&packet)?;
         if tx
@@ -297,7 +300,11 @@ pub fn run(opts: RingOptions, dest: SocketAddr) -> Result<(), RingError> {
             .wait_timeout(lock, time::Duration::from_secs(interval))
             .unwrap();
         lock = res.0;
-        if *lock {
+        if *lock || (loop_time == 0) {
+            if let Err(e) = tx.send(RingMessage::Stop) {
+                eprintln!("{}", e);
+                return Err(RingError::ChannelSendError);
+            }
             drop(tx);
             break;
         }

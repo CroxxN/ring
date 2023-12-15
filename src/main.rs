@@ -38,7 +38,7 @@ pub(crate) const DATA_LENGTH: usize = 8 + DATA.len(); // fixed 8 bytes data fiel
 
 struct RingOptions {
     socket: Socket,
-    count: u32,
+    count: i64,
     ttl: u32,
     interval: u64,
     timeout: u128,
@@ -67,7 +67,7 @@ impl RingOptions {
     fn new() -> Result<Self, RingError> {
         Ok(Self {
             socket: Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::ICMPV6))?,
-            count: 0,
+            count: -1,
             ttl: 128,
             interval: 1,
             timeout: 1000,
@@ -79,7 +79,7 @@ impl RingOptions {
     fn new_ip4() -> Result<Self, RingError> {
         Ok(Self {
             socket: Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))?,
-            count: 0,
+            count: -1,
             ttl: 128,
             interval: 1,
             timeout: 1000,
@@ -88,7 +88,7 @@ impl RingOptions {
             addr: String::new(),
         })
     }
-    fn set_count(&mut self, count: u32) {
+    fn set_count(&mut self, count: i64) {
         self.count = count;
     }
     fn set_ttl(&mut self, ttl: u32) -> Result<(), RingError> {
@@ -197,7 +197,7 @@ fn main() -> Result<(), RingError> {
     }
     // TODO: Maybe check and use `unwrap_or_default()`
     if let Some(c) = matches.opt_str("c") {
-        opt.set_count(c.parse().unwrap_or(0));
+        opt.set_count(c.parse().unwrap_or(-1));
     };
 
     if let Some(i) = matches.opt_str("i") {
