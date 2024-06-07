@@ -183,7 +183,6 @@ fn handle_returned(
                             continue;
                         }
 
-                        let ttl = buf[8];
                         let seq = (buf[6] as u16) << 8 | (buf[7] as u16);
                         if buf[0] == 0 && !check_checksum(&mut buf[..i]) {
                             rtx.1 += 1;
@@ -191,7 +190,7 @@ fn handle_returned(
                             if !opts.quite {
                                 // TODO: fix ttl
                                 println!(
-                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTTL: \x1b[1;37m{}, \x1b[32mTime: \x1b[1;37m{} ms\x1b[0m", i-8, seq, ttl, time
+                        "\x1b[1;32m{} bytes \x1b[37mreturned. \x1b[1;32mICMP Sequence Packet:\x1b[1;37m {}, \x1b[1;32mTime: \x1b[1;37m{} ms\x1b[0m", i-8, seq, time
                             );
                             }
                             rtx.0 += 1;
